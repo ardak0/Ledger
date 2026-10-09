@@ -1,0 +1,9 @@
+spring:
+  application:
+    name: ledger
+  datasource:
+    # Matches docker-compose.yml. Override with SPRING_DATASOURCE_URL / _USERNAME / _PASSWORD.
+    url: jdbc:postgresql://localhost:5432/ledger
+    username: ledger
+    password: ledger
+  # Flyway runs automatically at startup and applies db/migration/V*__*.sql in order.

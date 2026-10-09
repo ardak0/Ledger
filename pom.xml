@@ -1,0 +1,211 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-parent</artifactId>
+        <version>3.5.16</version>
+        <relativePath/>
+    </parent>
+
+    <groupId>com.ardakeles</groupId>
+    <artifactId>ledger</artifactId>
+    <version>0.1.0-SNAPSHOT</version>
+    <name>ledger</name>
+    <description>Double-entry ledger service: idempotent, deadlock-free money movement on PostgreSQL</description>
+
+    <properties>
+        <java.version>21</java.version>
+        <!-- One Postgres version for compose, codegen and tests. Keep in sync with docker-compose.yml. -->
+        <postgres.image>postgres:17-alpine</postgres.image>
+        <!-- jooq.version, flyway.version, postgresql.version come from the Spring Boot BOM, so the
+             codegen plugins below always match the runtime libraries. -->
+    </properties>
+
+    <dependencies>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-web</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-jooq</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.flywaydb</groupId>
+            <artifactId>flyway-core</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.flywaydb</groupId>
+            <artifactId>flyway-database-postgresql</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.postgresql</groupId>
+            <artifactId>postgresql</artifactId>
+            <scope>runtime</scope>
+        </dependency>
+
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-testcontainers</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>postgresql</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-maven-plugin</artifactId>
+            </plugin>
+
+            <!--
+                Code generation pipeline. jOOQ generates Java classes from the *real* schema, so the
+                schema must exist before we generate. The three plugins below run in this order:
+
+                  initialize       docker:start      throwaway Postgres on a random free port
+                  generate-sources flyway:migrate    apply src/main/resources/db/migration to it
+                  generate-sources jooq:generate     read the migrated schema, emit typed Java
+                  process-sources  docker:stop       throw the database away
+
+                Same-phase plugins run in POM order, so flyway must stay above jooq.
+                Requires a running Docker daemon at build time (as do the integration tests).
+            -->
+            <plugin>
+                <groupId>io.fabric8</groupId>
+                <artifactId>docker-maven-plugin</artifactId>
+                <version>0.49.0</version>
+                <configuration>
+                    <images>
+                        <image>
+                            <name>${postgres.image}</name>
+                            <alias>ledger-codegen-db</alias>
+                            <run>
+                                <env>
+                                    <POSTGRES_DB>ledger</POSTGRES_DB>
+                                    <POSTGRES_USER>ledger</POSTGRES_USER>
+                                    <POSTGRES_PASSWORD>ledger</POSTGRES_PASSWORD>
+                                </env>
+                                <ports>
+                                    <!-- Maps a random free host port to 5432 and exposes it as ${codegen.db.port}. -->
+                                    <port>codegen.db.port:5432</port>
+                                </ports>
+                            </run>
+                        </image>
+                    </images>
+                </configuration>
+                <executions>
+                    <execution>
+                        <id>start-codegen-db</id>
+                        <phase>initialize</phase>
+                        <goals><goal>start</goal></goals>
+                    </execution>
+                    <execution>
+                        <id>stop-codegen-db</id>
+                        <phase>process-sources</phase>
+                        <goals><goal>stop</goal></goals>
+                    </execution>
+                </executions>
+            </plugin>
+
+            <plugin>
+                <groupId>org.flywaydb</groupId>
+                <artifactId>flyway-maven-plugin</artifactId>
+                <version>${flyway.version}</version>
+                <configuration>
+                    <url>jdbc:postgresql://${docker.host.address}:${codegen.db.port}/ledger</url>
+                    <user>ledger</user>
+                    <password>ledger</password>
+                    <locations>
+                        <location>filesystem:${project.basedir}/src/main/resources/db/migration</location>
+                    </locations>
+                    <!-- The postgres image briefly runs a temporary init server, then restarts. Rather than
+                         guess when it is truly ready, the consumer retries until it can connect. -->
+                    <connectRetries>30</connectRetries>
+                </configuration>
+                <executions>
+                    <execution>
+                        <id>migrate-codegen-db</id>
+                        <phase>generate-sources</phase>
+                        <goals><goal>migrate</goal></goals>
+                    </execution>
+                </executions>
+                <dependencies>
+                    <dependency>
+                        <groupId>org.flywaydb</groupId>
+                        <artifactId>flyway-database-postgresql</artifactId>
+                        <version>${flyway.version}</version>
+                    </dependency>
+                    <dependency>
+                        <groupId>org.postgresql</groupId>
+                        <artifactId>postgresql</artifactId>
+                        <version>${postgresql.version}</version>
+                    </dependency>
+                </dependencies>
+            </plugin>
+
+            <plugin>
+                <groupId>org.jooq</groupId>
+                <artifactId>jooq-codegen-maven</artifactId>
+                <version>${jooq.version}</version>
+                <executions>
+                    <execution>
+                        <id>generate-jooq</id>
+                        <phase>generate-sources</phase>
+                        <goals><goal>generate</goal></goals>
+                    </execution>
+                </executions>
+                <dependencies>
+                    <dependency>
+                        <groupId>org.postgresql</groupId>
+                        <artifactId>postgresql</artifactId>
+                        <version>${postgresql.version}</version>
+                    </dependency>
+                </dependencies>
+                <configuration>
+                    <jdbc>
+                        <driver>org.postgresql.Driver</driver>
+                        <url>jdbc:postgresql://${docker.host.address}:${codegen.db.port}/ledger</url>
+                        <user>ledger</user>
+                        <password>ledger</password>
+                    </jdbc>
+                    <generator>
+                        <database>
+                            <name>org.jooq.meta.postgres.PostgresDatabase</name>
+                            <inputSchema>public</inputSchema>
+                            <excludes>flyway_schema_history</excludes>
+                        </database>
+                        <generate>
+                            <records>true</records>
+                            <pojos>false</pojos>
+                            <daos>false</daos>
+                            <javaTimeTypes>true</javaTimeTypes>
+                            <deprecated>false</deprecated>
+                        </generate>
+                        <target>
+                            <packageName>com.ardakeles.ledger.jooq</packageName>
+                            <directory>${project.build.directory}/generated-sources/jooq</directory>
+                        </target>
+                    </generator>
+                </configuration>
+            </plugin>
+        </plugins>
+    </build>
+</project>
