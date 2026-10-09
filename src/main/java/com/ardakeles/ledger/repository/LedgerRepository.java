@@ -47,8 +47,24 @@ public class LedgerRepository {
         return toAccount(created);
     }
 
+    /**
+     * Plain snapshot read, no lock. Fine for display (balance, statements); NEVER use the result
+     * to make a decision about moving money -- it can be stale the instant it is returned. Use
+     * {@link #lockAccount} for that.
+     */
     public Optional<Account> findAccount(long id) {
         return dsl.selectFrom(ACCOUNT).where(ACCOUNT.ID.eq(id)).fetchOptional().map(LedgerRepository::toAccount);
+    }
+
+    /**
+     * Reads an account and takes its row lock (SELECT ... FOR UPDATE), held until the transaction
+     * ends. If another transaction holds the lock, this blocks; when it is released, Postgres
+     * re-reads the latest committed version of the row, so the balance returned here is current
+     * and cannot change under us until we commit.
+     */
+    public Optional<Account> lockAccount(long id) {
+        return dsl.selectFrom(ACCOUNT).where(ACCOUNT.ID.eq(id)).forUpdate().fetchOptional()
+                .map(LedgerRepository::toAccount);
     }
 
     /**

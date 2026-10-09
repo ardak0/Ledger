@@ -12,33 +12,64 @@ import com.ardakeles.ledger.domain.TransferResult;
 import com.ardakeles.ledger.repository.LedgerRepository;
 import java.security.MessageDigest;
 import java.util.Optional;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Isolation;
 import org.springframework.transaction.annotation.Transactional;
 
 @Service
 public class TransferService {
 
+    private static final Logger log = LoggerFactory.getLogger(TransferService.class);
+
     private final LedgerRepository repository;
 
-    public TransferService(LedgerRepository repository) {
+    /**
+     * DELIBERATE DEMONSTRATION OF A BUG -- NOT A PRODUCTION SETTING.
+     *
+     * <p>When false, account locks are taken in the order the transfer names them (from, then to)
+     * instead of ascending id. Two concurrent opposite transfers, A->B and B->A, then each hold one
+     * lock and wait for the other: a deadlock, which Postgres resolves by killing one transaction.
+     * The killed transaction rolls back completely, so money is still never created or destroyed
+     * -- the transfer just fails. This exists so the tests and the demo page can show the
+     * deadlock, and the fix, side by side. Defaults to true (safe) and logs a warning when off.
+     */
+    private final boolean orderedLocking;
+
+    public TransferService(LedgerRepository repository,
+                           @Value("${ledger.locking.ordered:true}") boolean orderedLocking) {
         this.repository = repository;
+        this.orderedLocking = orderedLocking;
+        if (!orderedLocking) {
+            log.warn("ledger.locking.ordered=false: account locks are taken in request order, NOT ascending id. "
+                    + "Deadlocks are EXPECTED under concurrent opposite transfers. Demonstration only.");
+        }
     }
 
     /**
-     * Posts a transfer exactly once per idempotency key.
+     * Posts a transfer exactly once per idempotency key, safely under concurrency.
      *
-     * <p>The key is claimed FIRST, by inserting the transfer row. Whoever inserts it owns the
-     * execution; anyone else with the same key either gets the original back (same payload) or an
-     * error (different payload). Claiming before any other work means a duplicate never takes
-     * account locks (added in step 5), so it cannot deadlock with, or queue behind, real work. If
-     * the owner fails for any reason the whole transaction rolls back, including the claim, so a
-     * failed attempt does not burn the key.
+     * <p>Order of operations matters, and each step is placed deliberately:
+     * <ol>
+     *   <li><b>Claim the idempotency key</b> by inserting the transfer row. A duplicate waits here,
+     *       holding no account locks, so it cannot deadlock with real work. If this transaction
+     *       later fails, the claim rolls back with it, so a failed attempt does not burn the key.</li>
+     *   <li><b>Lock both accounts</b> in ascending id order (see {@link #lockAccounts}). This is the
+     *       deadlock-avoidance step, and it must come before any statement that would lock an
+     *       account row implicitly (the UPDATEs below), since statement order would otherwise
+     *       become lock order.</li>
+     *   <li><b>Decide</b> (currency, funds) using the locked rows. These reads are current and
+     *       cannot change before commit, so check-then-write is atomic against other writers.</li>
+     *   <li><b>Write</b> entries and balance deltas. Both rows are already ours; order is irrelevant.</li>
+     * </ol>
      *
-     * <p>STEP 4 STATE: idempotency is concurrency-safe, but account reads are still lock-free, so
-     * transfers with <em>different</em> keys touching the same accounts are not yet safe. Step 5
-     * replaces the reads with ordered row locks.
+     * <p>READ COMMITTED is sufficient (SERIALIZABLE is not needed) because the invariant is
+     * per-row and every writer takes the row lock first; it is spelled out here because the
+     * argument depends on it. The deferred trigger then verifies the double-entry sum at commit.
      */
-    @Transactional
+    @Transactional(isolation = Isolation.READ_COMMITTED)
     public TransferResult execute(String idempotencyKey, TransferRequest request) {
         Optional<Transfer> claimed = repository.insertTransferIfAbsent(idempotencyKey, request);
         if (claimed.isEmpty()) {
@@ -46,10 +77,9 @@ public class TransferService {
         }
         Transfer transfer = claimed.get();
 
-        Account from = repository.findAccount(request.fromAccountId())
-                .orElseThrow(() -> new AccountNotFoundException(request.fromAccountId()));
-        Account to = repository.findAccount(request.toAccountId())
-                .orElseThrow(() -> new AccountNotFoundException(request.toAccountId()));
+        LockedAccounts locked = lockAccounts(request);
+        Account from = locked.from();
+        Account to = locked.to();
 
         if (from.currency() != request.currency() || to.currency() != request.currency()) {
             throw new CurrencyMismatchException("request is in " + request.currency() + " but accounts are "
@@ -65,6 +95,27 @@ public class TransferService {
         repository.applyBalanceDelta(from.id(), -request.amountMinor());
         repository.applyBalanceDelta(to.id(), request.amountMinor());
         return new TransferResult(transfer, false);
+    }
+
+    private record LockedAccounts(Account from, Account to) {
+    }
+
+    /**
+     * Takes both row locks, one statement each, lowest id first. Any total order works; ascending
+     * id is the natural one. With every transaction acquiring in the same order, a wait-for cycle
+     * is impossible: a cycle needs someone holding a higher id while waiting for a lower one.
+     * Separate statements (rather than one ORDER BY ... FOR UPDATE) keep the order explicit and
+     * independent of how the planner executes a multi-row locking query.
+     */
+    private LockedAccounts lockAccounts(TransferRequest request) {
+        long fromId = request.fromAccountId();
+        long toId = request.toAccountId();
+        long firstId = orderedLocking ? Math.min(fromId, toId) : fromId; // unordered: see field comment
+        long secondId = orderedLocking ? Math.max(fromId, toId) : toId;
+
+        Account first = repository.lockAccount(firstId).orElseThrow(() -> new AccountNotFoundException(firstId));
+        Account second = repository.lockAccount(secondId).orElseThrow(() -> new AccountNotFoundException(secondId));
+        return firstId == fromId ? new LockedAccounts(first, second) : new LockedAccounts(second, first);
     }
 
     /**
