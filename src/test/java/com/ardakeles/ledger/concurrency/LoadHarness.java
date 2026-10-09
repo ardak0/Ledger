@@ -7,8 +7,8 @@ import com.ardakeles.ledger.domain.Currency;
 import com.ardakeles.ledger.domain.InsufficientFundsException;
 import com.ardakeles.ledger.domain.TransferRequest;
 import com.ardakeles.ledger.repository.LedgerRepository;
+import com.ardakeles.ledger.service.Deadlocks;
 import com.ardakeles.ledger.service.TransferService;
-import java.sql.SQLException;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -35,9 +35,6 @@ import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
 final class LoadHarness {
 
     private static final Logger log = LoggerFactory.getLogger(LoadHarness.class);
-
-    /** SQLSTATE Postgres reports for a transaction it killed to break a deadlock. */
-    private static final String DEADLOCK_DETECTED = "40P01";
 
     private LoadHarness() {
     }
@@ -110,7 +107,7 @@ final class LoadHarness {
                 } catch (InsufficientFundsException e) {
                     insufficient.incrementAndGet();
                 } catch (Throwable t) {
-                    if (isDeadlock(t)) {
+                    if (Deadlocks.isDeadlock(t)) {
                         deadlocks.incrementAndGet();
                     } else {
                         unexpected.add(t);
@@ -131,19 +128,6 @@ final class LoadHarness {
                 result.unexpected().size(), elapsed.toMillis(),
                 Math.round(workload.size() * 1000.0 / Math.max(1, elapsed.toMillis())));
         return result;
-    }
-
-    /** True if a Postgres deadlock-victim error appears anywhere in the cause chain. */
-    static boolean isDeadlock(Throwable t) {
-        for (Throwable c = t; c != null; c = c.getCause()) {
-            if (c instanceof SQLException e && DEADLOCK_DETECTED.equals(e.getSQLState())) {
-                return true;
-            }
-            if (c.getCause() == c) {
-                break;
-            }
-        }
-        return false;
     }
 
     /**

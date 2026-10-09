@@ -5,15 +5,21 @@ import static com.ardakeles.ledger.jooq.Tables.ENTRY;
 import static com.ardakeles.ledger.jooq.Tables.TRANSFER;
 
 import com.ardakeles.ledger.domain.Account;
+import com.ardakeles.ledger.domain.BalanceSnapshot;
 import com.ardakeles.ledger.domain.Currency;
 import com.ardakeles.ledger.domain.LedgerEntry;
 import com.ardakeles.ledger.domain.StoredTransfer;
 import com.ardakeles.ledger.domain.Transfer;
 import com.ardakeles.ledger.domain.TransferRequest;
 import com.ardakeles.ledger.jooq.tables.records.AccountRecord;
+import java.math.BigDecimal;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import org.jooq.DSLContext;
+import org.jooq.Field;
+import org.jooq.impl.DSL;
 import org.springframework.stereotype.Repository;
 
 /**
@@ -135,6 +141,25 @@ public class LedgerRepository {
                 .limit(limit)
                 .fetch(r -> new LedgerEntry(r.getId(), r.getTransferId(), r.getAccountId(), r.getAmountMinor(),
                         Currency.valueOf(r.getCurrency()), r.getCreatedAt()));
+    }
+
+    /**
+     * Balances of {@code accountIds} and the sum over every account, in ONE statement. A statement sees
+     * a single snapshot of committed data (READ COMMITTED takes its snapshot per statement), so both
+     * figures are mutually consistent: no transfer can be half-visible. Plain read, takes no locks.
+     */
+    public BalanceSnapshot snapshotBalances(List<Long> accountIds) {
+        var all = ACCOUNT.as("all_accounts");
+        Field<BigDecimal> globalSum = DSL.field(DSL.select(DSL.sum(all.BALANCE_MINOR)).from(all)).as("global_sum");
+        var rows = dsl.select(ACCOUNT.ID, ACCOUNT.BALANCE_MINOR, globalSum)
+                .from(ACCOUNT)
+                .where(ACCOUNT.ID.in(accountIds))
+                .orderBy(ACCOUNT.ID)
+                .fetch();
+        Map<Long, Long> balances = new LinkedHashMap<>();
+        rows.forEach(r -> balances.put(r.get(ACCOUNT.ID), r.get(ACCOUNT.BALANCE_MINOR)));
+        long global = rows.isEmpty() ? 0 : rows.get(0).get(globalSum).longValueExact();
+        return new BalanceSnapshot(balances, global);
     }
 
     private static Account toAccount(AccountRecord r) {

@@ -12,9 +12,6 @@ import com.ardakeles.ledger.domain.TransferResult;
 import com.ardakeles.ledger.repository.LedgerRepository;
 import java.security.MessageDigest;
 import java.util.Optional;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Isolation;
 import org.springframework.transaction.annotation.Transactional;
@@ -22,30 +19,12 @@ import org.springframework.transaction.annotation.Transactional;
 @Service
 public class TransferService {
 
-    private static final Logger log = LoggerFactory.getLogger(TransferService.class);
-
     private final LedgerRepository repository;
+    private final LockingMode lockingMode;
 
-    /**
-     * DELIBERATE DEMONSTRATION OF A BUG -- NOT A PRODUCTION SETTING.
-     *
-     * <p>When false, account locks are taken in the order the transfer names them (from, then to)
-     * instead of ascending id. Two concurrent opposite transfers, A->B and B->A, then each hold one
-     * lock and wait for the other: a deadlock, which Postgres resolves by killing one transaction.
-     * The killed transaction rolls back completely, so money is still never created or destroyed
-     * -- the transfer just fails. This exists so the tests and the demo page can show the
-     * deadlock, and the fix, side by side. Defaults to true (safe) and logs a warning when off.
-     */
-    private final boolean orderedLocking;
-
-    public TransferService(LedgerRepository repository,
-                           @Value("${ledger.locking.ordered:true}") boolean orderedLocking) {
+    public TransferService(LedgerRepository repository, LockingMode lockingMode) {
         this.repository = repository;
-        this.orderedLocking = orderedLocking;
-        if (!orderedLocking) {
-            log.warn("ledger.locking.ordered=false: account locks are taken in request order, NOT ascending id. "
-                    + "Deadlocks are EXPECTED under concurrent opposite transfers. Demonstration only.");
-        }
+        this.lockingMode = lockingMode;
     }
 
     /**
@@ -110,8 +89,9 @@ public class TransferService {
     private LockedAccounts lockAccounts(TransferRequest request) {
         long fromId = request.fromAccountId();
         long toId = request.toAccountId();
-        long firstId = orderedLocking ? Math.min(fromId, toId) : fromId; // unordered: see field comment
-        long secondId = orderedLocking ? Math.max(fromId, toId) : toId;
+        boolean ordered = lockingMode.isOrdered(); // read once so both locks follow the same rule
+        long firstId = ordered ? Math.min(fromId, toId) : fromId; // unordered: see LockingMode
+        long secondId = ordered ? Math.max(fromId, toId) : toId;
 
         Account first = repository.lockAccount(firstId).orElseThrow(() -> new AccountNotFoundException(firstId));
         Account second = repository.lockAccount(secondId).orElseThrow(() -> new AccountNotFoundException(secondId));

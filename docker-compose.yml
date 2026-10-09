@@ -2,12 +2,16 @@
 services:
   db:
     image: postgres:17-alpine
+    # deadlock_timeout: Postgres only looks for a deadlock after a lock wait lasts this long (default
+    # 1s). Lowered so the /demo page shows deadlocks resolving within a fraction of a second. It
+    # finds the same real cycles sooner; it cannot invent false ones. Production keeps the default.
+    command: ["postgres", "-c", "deadlock_timeout=100ms"]
     environment:
       POSTGRES_DB: ledger
       POSTGRES_USER: ledger
       POSTGRES_PASSWORD: ledger
     ports:
-      - "5432:5432"
+      - "${LEDGER_DB_PORT:-5432}:5432"
     volumes:
       - ledger-pgdata:/var/lib/postgresql/data
     healthcheck:

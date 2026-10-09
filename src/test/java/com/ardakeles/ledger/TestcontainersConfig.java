@@ -29,7 +29,8 @@ public class TestcontainersConfig {
             // deadlock_timeout=100ms: Postgres only looks for a deadlock after a lock wait lasts this
             //   long (default 1s). A shorter value finds the same real cycles sooner; it cannot create
             //   false deadlocks. Keeps the deadlock negative-control test fast.
-            .withCommand("postgres", "-c", "fsync=off", "-c", "deadlock_timeout=100ms");
+            // max_connections=200: several cached Spring contexts each keep their own connection pool open.
+            .withCommand("postgres", "-c", "fsync=off", "-c", "deadlock_timeout=100ms", "-c", "max_connections=200");
 
     // destroyMethod = "": Spring must not stop the shared container when one context closes.
     // Testcontainers' Ryuk sidecar removes it when the test JVM exits.

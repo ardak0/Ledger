@@ -1,0 +1,11 @@
+# Activated with --spring.profiles.active=demo (see README). Turns on the /demo page and its
+# endpoints, which include a switch that makes the ledger deadlock ON PURPOSE. Never enable in production.
+ledger:
+  demo:
+    enabled: true
+
+spring:
+  datasource:
+    hikari:
+      # The demo runs 32 worker threads; the SSE ticker also needs a free connection. Keep workers < pool.
+      maximum-pool-size: 40

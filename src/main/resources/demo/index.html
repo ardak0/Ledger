@@ -1,0 +1,318 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ledger chaos demo</title>
+<style>
+  :root {
+    color-scheme: dark;
+    --bg: #0b0f14; --panel: #121923; --panel-2: #0f151d; --line: #222d3b;
+    --text: #e6edf3; --muted: #8b98a9;
+    --green: #3fb950; --red: #f85149; --orange: #f0883e; --blue: #58a6ff;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  .wrap { max-width: 1040px; margin: 0 auto; padding: 24px 16px 56px; }
+  header { display: flex; align-items: baseline; justify-content: space-between; flex-wrap: wrap; gap: 8px; margin-bottom: 18px; }
+  h1 { margin: 0; font-size: 20px; letter-spacing: .2px; }
+  .sub { color: var(--muted); font-size: 13px; }
+  .conn { font-size: 12px; color: var(--muted); display: inline-flex; align-items: center; gap: 6px; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--red); }
+  .conn.live .dot { background: var(--green); }
+
+  .banner {
+    display: none; margin-bottom: 14px; padding: 10px 14px; border-radius: 8px; font-size: 14px;
+    background: rgba(248,81,73,.12); border: 1px solid rgba(248,81,73,.5); color: #ffb3ae;
+  }
+  body.unsafe .banner { display: block; }
+
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 18px 20px; }
+
+  /* The number that must not move */
+  .invariant { text-align: center; padding: 26px 20px 22px; }
+  .invariant .label { color: var(--muted); font-size: 13px; text-transform: uppercase; letter-spacing: 1.4px; }
+  .invariant .value {
+    font-size: clamp(44px, 9vw, 84px); font-weight: 700; line-height: 1.1; margin: 6px 0 2px;
+    font-variant-numeric: tabular-nums; letter-spacing: -1px;
+  }
+  .invariant .unit { font-size: .35em; color: var(--muted); font-weight: 500; margin-left: 8px; letter-spacing: 0; }
+  .status { display: inline-block; margin-top: 6px; padding: 4px 12px; border-radius: 999px; font-size: 13px;
+            background: rgba(63,185,80,.14); color: var(--green); border: 1px solid rgba(63,185,80,.4); }
+  .status.bad { background: rgba(248,81,73,.16); color: var(--red); border-color: rgba(248,81,73,.6); }
+  .global { margin-top: 12px; font-size: 13px; color: var(--muted); }
+  .global b { color: var(--text); font-variant-numeric: tabular-nums; }
+
+  .row { display: grid; gap: 14px; margin-top: 14px; }
+  @media (min-width: 820px) { .row.two { grid-template-columns: 1fr 1.3fr; } }
+
+  /* Controls */
+  .controls { display: flex; flex-direction: column; gap: 14px; }
+  .switch { display: flex; align-items: center; gap: 12px; cursor: pointer; user-select: none; }
+  .switch input { position: absolute; opacity: 0; pointer-events: none; }
+  .track { width: 46px; height: 26px; border-radius: 999px; background: #3a1f1f; border: 1px solid var(--red);
+           position: relative; flex: none; transition: background .15s, border-color .15s; }
+  .track::after { content: ""; position: absolute; top: 2px; left: 2px; width: 20px; height: 20px; border-radius: 50%;
+                  background: var(--text); transition: transform .15s; }
+  .switch input:checked + .track { background: #123a1f; border-color: var(--green); }
+  .switch input:checked + .track::after { transform: translateX(20px); }
+  .switch input:focus-visible + .track { outline: 2px solid var(--blue); outline-offset: 2px; }
+  .switch .t1 { font-weight: 600; }
+  .switch .t2 { color: var(--muted); font-size: 13px; }
+  .check { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 14px; cursor: pointer; }
+  button#fire {
+    appearance: none; border: 0; border-radius: 10px; padding: 14px 18px; font-size: 16px; font-weight: 700;
+    background: var(--blue); color: #04121f; cursor: pointer;
+  }
+  button#fire:hover:not(:disabled) { filter: brightness(1.1); }
+  button#fire:disabled { opacity: .5; cursor: progress; }
+  button#fire:focus-visible { outline: 2px solid var(--text); outline-offset: 2px; }
+  .hint { color: var(--muted); font-size: 12.5px; }
+
+  /* Counters */
+  .counters { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
+  .counter { background: var(--panel-2); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; }
+  .counter .n { font-size: 28px; font-weight: 700; font-variant-numeric: tabular-nums; line-height: 1.2; }
+  .counter .l { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: 1px; }
+  .c-completed .n { color: var(--green); } .c-failed .n { color: var(--red); }
+  .c-deadlocked .n { color: var(--orange); } .c-retried .n { color: var(--blue); }
+  .progress { height: 6px; background: var(--panel-2); border-radius: 999px; overflow: hidden; margin-top: 12px; border: 1px solid var(--line); }
+  .progress > div { height: 100%; width: 0; background: var(--blue); transition: width .1s linear; }
+  .runline { margin-top: 8px; color: var(--muted); font-size: 12.5px; min-height: 18px; }
+
+  /* Accounts */
+  .accounts { display: grid; grid-template-columns: repeat(auto-fill, minmax(118px, 1fr)); gap: 10px; }
+  .acct { background: var(--panel-2); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; }
+  .acct .name { color: var(--muted); font-size: 12px; letter-spacing: 1px; }
+  .acct .bal { font-size: 17px; font-weight: 600; font-variant-numeric: tabular-nums; }
+  @keyframes up   { from { background: rgba(63,185,80,.35); }  to { background: var(--panel-2); } }
+  @keyframes down { from { background: rgba(248,81,73,.35); }  to { background: var(--panel-2); } }
+  .acct.up   { animation: up .5s ease-out; }
+  .acct.down { animation: down .5s ease-out; }
+  @media (prefers-reduced-motion: reduce) { .acct.up, .acct.down { animation: none; } .progress > div { transition: none; } }
+
+  h2 { margin: 0 0 10px; font-size: 13px; color: var(--muted); text-transform: uppercase; letter-spacing: 1.2px; font-weight: 600; }
+  table { width: 100%; border-collapse: collapse; font-size: 13.5px; font-variant-numeric: tabular-nums; }
+  th, td { text-align: right; padding: 6px 8px; border-bottom: 1px solid var(--line); }
+  th:first-child, td:first-child { text-align: left; }
+  th { color: var(--muted); font-weight: 500; font-size: 12px; }
+  .tag { padding: 1px 8px; border-radius: 999px; font-size: 12px; border: 1px solid var(--line); }
+  .tag.SAFE { color: var(--green); border-color: rgba(63,185,80,.5); }
+  .tag.UNSAFE { color: var(--red); border-color: rgba(248,81,73,.6); }
+  .tag.MIXED { color: var(--orange); border-color: rgba(240,136,62,.6); }
+  .empty { color: var(--muted); font-size: 13px; padding: 6px 0; }
+
+  .explain { color: var(--muted); font-size: 13.5px; }
+  .explain p { margin: 0 0 8px; }
+  .explain b { color: var(--text); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div>
+      <h1>Ledger chaos demo</h1>
+      <div class="sub">A double-entry ledger on PostgreSQL. Try to make it create or destroy a cent.</div>
+    </div>
+    <span id="conn" class="conn"><span class="dot"></span><span id="conn-text">connecting…</span></span>
+  </header>
+
+  <div class="banner" role="status">
+    <b>UNSAFE MODE.</b> Account locks are taken in the order each transfer names them, not by ascending id.
+    Opposite transfers (A→B and B→A) can now deadlock. Postgres kills one; it rolls back completely.
+  </div>
+
+  <section class="panel invariant" aria-live="polite">
+    <div class="label">Total money across the 8 accounts</div>
+    <div class="value"><span id="pool-sum">—</span><span class="unit">USD</span></div>
+    <div id="inv-status" class="status">waiting for data…</div>
+    <div class="global">All accounts including the system funding account: <b id="global-sum">—</b>
+      <span id="global-ok"></span> &nbsp;·&nbsp; double-entry means this is always exactly zero</div>
+  </section>
+
+  <div class="row two">
+    <section class="panel controls">
+      <h2>Controls</h2>
+      <label class="switch">
+        <input type="checkbox" id="safe-toggle" checked>
+        <span class="track"></span>
+        <span><span class="t1" id="safe-label">Safe mode</span><br>
+              <span class="t2">Lock accounts in ascending id order</span></span>
+      </label>
+      <label class="check"><input type="checkbox" id="retry-toggle"> Retry deadlock victims (up to 3×)</label>
+      <button id="fire" type="button" disabled>Fire 500 transfers</button>
+      <div class="hint">500 random transfers between the 8 accounts, run by <span id="workers">32</span> concurrent workers.
+        Flip safe mode while a run is in progress.</div>
+    </section>
+
+    <section class="panel">
+      <h2>This run <span id="runno" style="text-transform:none;letter-spacing:0"></span></h2>
+      <div class="counters">
+        <div class="counter c-completed"><div class="n" id="c-completed">0</div><div class="l">Completed</div></div>
+        <div class="counter c-failed"><div class="n" id="c-failed">0</div><div class="l">Failed</div></div>
+        <div class="counter c-deadlocked"><div class="n" id="c-deadlocked">0</div><div class="l">Deadlocked</div></div>
+        <div class="counter c-retried"><div class="n" id="c-retried">0</div><div class="l">Retried</div></div>
+      </div>
+      <div class="progress"><div id="bar"></div></div>
+      <div class="runline" id="runline"></div>
+    </section>
+  </div>
+
+  <section class="panel" style="margin-top:14px">
+    <h2>Accounts</h2>
+    <div class="accounts" id="accounts"><div class="empty">Setting up demo accounts…</div></div>
+  </section>
+
+  <div class="row two">
+    <section class="panel">
+      <h2>Recent runs</h2>
+      <table id="history" aria-label="Recent runs">
+        <thead><tr><th>Run</th><th>Mode</th><th>Done</th><th>Failed</th><th>Dlk</th><th>Retry</th><th>Time</th></tr></thead>
+        <tbody></tbody>
+      </table>
+      <div class="empty" id="history-empty">No runs yet.</div>
+    </section>
+    <section class="panel explain">
+      <h2>What am I looking at?</h2>
+      <p><b>Every transfer is two ledger entries that sum to zero.</b> The database itself refuses anything else,
+         so the big number above cannot change however hard you hammer the accounts underneath it.</p>
+      <p><b>Safe mode</b> always locks the lower account id first, so a wait cycle is impossible and nothing deadlocks.
+         <b>Unsafe mode</b> locks in request order: A→B and B→A each grab one lock and wait for the other.
+         Postgres detects the cycle and kills one transaction.</p>
+      <p><b>A killed transfer fails, but rolls back completely.</b> No money is created or destroyed and no
+         half-written transfer survives; the number above stays put, and the global line stays at zero.
+         Safe mode only buys <i>liveness</i> (transfers succeed instead of dying), not correctness.</p>
+    </section>
+  </div>
+</div>
+
+<script>
+(function () {
+  'use strict';
+  var $ = function (id) { return document.getElementById(id); };
+
+  // Minor units -> "1,234.56". Amounts here are far below 2^53, so Number arithmetic is exact.
+  function money(minor) {
+    var neg = minor < 0, abs = Math.abs(minor);
+    var whole = Math.floor(abs / 100), cents = String(abs % 100);
+    if (cents.length < 2) cents = '0' + cents;
+    return (neg ? '−' : '') + whole.toLocaleString('en-US') + '.' + cents;
+  }
+
+  var checked = 0, deviations = 0, lastUserToggle = 0, prev = {}, running = false;
+
+  function setText(id, v) { var el = $(id); if (el.textContent !== String(v)) el.textContent = v; }
+
+  function renderAccounts(list) {
+    var box = $('accounts');
+    if (box.dataset.n !== String(list.length)) {
+      box.textContent = '';
+      list.forEach(function (a) {
+        var d = document.createElement('div'); d.className = 'acct'; d.id = 'acct-' + a.id;
+        var n = document.createElement('div'); n.className = 'name'; n.textContent = 'ACCOUNT ' + a.name;
+        var b = document.createElement('div'); b.className = 'bal';
+        d.appendChild(n); d.appendChild(b); box.appendChild(d);
+      });
+      box.dataset.n = String(list.length);
+    }
+    list.forEach(function (a) {
+      var d = $('acct-' + a.id), b = d.lastChild, text = money(a.balanceMinor);
+      if (b.textContent !== text) {
+        b.textContent = text;
+        if (prev[a.id] !== undefined) {
+          d.classList.remove('up', 'down'); void d.offsetWidth;   // restart the animation
+          d.classList.add(a.balanceMinor > prev[a.id] ? 'up' : 'down');
+        }
+      }
+      prev[a.id] = a.balanceMinor;
+    });
+  }
+
+  function renderHistory(rows) {
+    var body = document.querySelector('#history tbody');
+    body.textContent = '';
+    $('history-empty').style.display = rows.length ? 'none' : 'block';
+    rows.forEach(function (r) {
+      var tr = document.createElement('tr');
+      var cells = [
+        '#' + r.run, null, r.completed, r.failed, r.deadlocked, r.retryEnabled ? r.retried : '–',
+        (r.elapsedMillis / 1000).toFixed(1) + 's'
+      ];
+      cells.forEach(function (c, i) {
+        var td = document.createElement('td');
+        if (i === 1) { var s = document.createElement('span'); s.className = 'tag ' + r.mode; s.textContent = r.mode; td.appendChild(s); }
+        else td.textContent = c;
+        tr.appendChild(td);
+      });
+      body.appendChild(tr);
+    });
+  }
+
+  function render(s) {
+    var safe = s.mode === 'SAFE';
+    document.body.classList.toggle('unsafe', !safe);
+    if (Date.now() - lastUserToggle > 800) $('safe-toggle').checked = safe;   // don't fight a click in flight
+    $('safe-label').textContent = safe ? 'Safe mode' : 'Safe mode OFF';
+    setText('workers', s.workers);
+
+    if (!s.ready) { setText('inv-status', 'setting up demo accounts…'); return; }
+
+    // The invariant: the pool total, and the all-accounts total (always zero by double entry).
+    setText('pool-sum', money(s.poolSumMinor));
+    checked++;
+    var ok = s.poolSumMinor === s.expectedPoolSumMinor && s.globalSumMinor === 0;
+    if (!ok) deviations++;
+    var st = $('inv-status');
+    st.classList.toggle('bad', deviations > 0);
+    st.textContent = deviations === 0
+      ? '✓ unchanged · ' + checked.toLocaleString('en-US') + ' snapshots checked · 0 deviations'
+      : '✗ ' + deviations + ' deviation(s) in ' + checked.toLocaleString('en-US') + ' snapshots';
+    setText('global-sum', money(s.globalSumMinor));
+    setText('global-ok', s.globalSumMinor === 0 ? '✓' : '✗');
+
+    renderAccounts(s.accounts);
+
+    var c = s.counters;
+    setText('c-completed', c.completed); setText('c-failed', c.failed);
+    setText('c-deadlocked', c.deadlocked); setText('c-retried', c.retried);
+    setText('runno', c.run ? '· run #' + c.run : '');
+    var done = c.completed + c.failed;
+    $('bar').style.width = (c.total ? Math.min(100, done * 100 / c.total) : 0) + '%';
+    setText('runline', c.run
+      ? done + ' / ' + c.total + ' finished · ' + (c.elapsedMillis / 1000).toFixed(1) + 's' + (s.running ? ' · running…' : '')
+      : '');
+    running = s.running;
+    $('fire').disabled = running;
+    $('fire').textContent = running ? 'Running…' : 'Fire 500 transfers';
+    renderHistory(s.history);
+  }
+
+  function post(url, body) {
+    return fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body) });
+  }
+
+  $('fire').addEventListener('click', function () {
+    $('fire').disabled = true;
+    post('/demo/fire', { retryDeadlocks: $('retry-toggle').checked }).then(function (r) {
+      if (!r.ok && r.status !== 409) $('fire').disabled = false;
+    }).catch(function () { $('fire').disabled = false; });
+  });
+
+  $('safe-toggle').addEventListener('change', function () {
+    var want = this.checked, box = this;
+    lastUserToggle = Date.now();
+    post('/demo/mode', { safe: want }).then(function (r) { if (!r.ok) box.checked = !want; })
+      .catch(function () { box.checked = !want; });
+  });
+
+  var es = new EventSource('/demo/events');
+  es.addEventListener('state', function (e) { render(JSON.parse(e.data)); });
+  es.onopen = function () { $('conn').classList.add('live'); setText('conn-text', 'live'); };
+  es.onerror = function () { $('conn').classList.remove('live'); setText('conn-text', 'reconnecting…'); };
+})();
+</script>
+</body>
+</html>
