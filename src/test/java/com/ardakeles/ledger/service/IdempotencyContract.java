@@ -33,11 +33,13 @@ import org.springframework.jdbc.core.JdbcTemplate;
  */
 @SpringBootTest
 @Import(TestcontainersConfig.class)
-class IdempotencyTest {
+abstract class IdempotencyContract {
+
+    /** The implementation under test: the same assertions run against every TransferService strategy. */
+    abstract TransferService service();
 
     static final int THREADS = 8;
 
-    @Autowired TransferService service;
     @Autowired LedgerRepository repository;
     @Autowired JdbcTemplate jdbc;
 
@@ -48,8 +50,8 @@ class IdempotencyTest {
         String key = key();
         var request = new TransferRequest(alice.id(), bob.id(), 300, Currency.USD);
 
-        TransferResult first = service.execute(key, request);
-        TransferResult second = service.execute(key, request);
+        TransferResult first = service().execute(key, request);
+        TransferResult second = service().execute(key, request);
 
         assertThat(first.replayed()).isFalse();
         assertThat(second.replayed()).isTrue();
@@ -64,9 +66,9 @@ class IdempotencyTest {
         Account alice = funded(1_000);
         Account bob = repository.createAccount(Currency.USD);
         String key = key();
-        service.execute(key, new TransferRequest(alice.id(), bob.id(), 300, Currency.USD));
+        service().execute(key, new TransferRequest(alice.id(), bob.id(), 300, Currency.USD));
 
-        assertThatThrownBy(() -> service.execute(key, new TransferRequest(alice.id(), bob.id(), 301, Currency.USD)))
+        assertThatThrownBy(() -> service().execute(key, new TransferRequest(alice.id(), bob.id(), 301, Currency.USD)))
                 .isInstanceOf(IdempotencyKeyReuseException.class);
 
         assertThat(balance(alice)).isEqualTo(700);
@@ -82,11 +84,11 @@ class IdempotencyTest {
         String key = key();
         var request = new TransferRequest(alice.id(), bob.id(), 150, Currency.USD);
 
-        assertThatThrownBy(() -> service.execute(key, request)).isInstanceOf(InsufficientFundsException.class);
+        assertThatThrownBy(() -> service().execute(key, request)).isInstanceOf(InsufficientFundsException.class);
         assertThat(transfersWithKey(key)).isZero();
 
         fund(alice, 100); // now 200
-        TransferResult retry = service.execute(key, request);
+        TransferResult retry = service().execute(key, request);
 
         assertThat(retry.replayed()).isFalse(); // a genuine first success, not a replay
         assertThat(balance(alice)).isEqualTo(50);
@@ -100,7 +102,7 @@ class IdempotencyTest {
         String key = key();
         var request = new TransferRequest(alice.id(), bob.id(), 250, Currency.USD);
 
-        List<Outcome> outcomes = runConcurrently(THREADS, i -> () -> service.execute(key, request));
+        List<Outcome> outcomes = runConcurrently(THREADS, i -> () -> service().execute(key, request));
 
         assertThat(outcomes).allSatisfy(o -> assertThat(o.error()).as("no request may fail").isNull());
         assertThat(outcomes.stream().filter(o -> !o.result().replayed())).hasSize(1); // exactly one winner
@@ -121,7 +123,7 @@ class IdempotencyTest {
 
         // even threads send A, odd threads send B
         List<Outcome> outcomes = runConcurrently(THREADS,
-                i -> () -> service.execute(key, i % 2 == 0 ? payloadA : payloadB));
+                i -> () -> service().execute(key, i % 2 == 0 ? payloadA : payloadB));
 
         List<Outcome> winners = outcomes.stream().filter(o -> o.result() != null && !o.result().replayed()).toList();
         assertThat(winners).hasSize(1);
@@ -188,7 +190,7 @@ class IdempotencyTest {
 
     private void fund(Account account, long amount) {
         Account funding = repository.createSystemAccount(Currency.USD);
-        service.execute(key(), new TransferRequest(funding.id(), account.id(), amount, Currency.USD));
+        service().execute(key(), new TransferRequest(funding.id(), account.id(), amount, Currency.USD));
     }
 
     private long balance(Account a) {

@@ -24,14 +24,17 @@ import org.springframework.context.annotation.Import;
 import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
 
 /**
- * The test that matters most: many threads hammering overlapping accounts through the real
+ * Contract for any TransferService strategy. The test that matters most: many threads hammering overlapping accounts through the real
  * service and real Postgres, then checking that nothing was lost, created, or left half-done.
  * The connection pool is sized to the thread count so the database genuinely sees 20-way
  * concurrency instead of threads queuing for connections.
  */
 @SpringBootTest(properties = "spring.datasource.hikari.maximum-pool-size=20")
 @Import(TestcontainersConfig.class)
-class ConcurrentTransfersTest {
+abstract class ConcurrentTransfersContract {
+
+    /** The implementation under test: the same assertions run against every TransferService strategy. */
+    abstract TransferService service();
 
     static final int THREADS = 20;
     static final int TRANSFERS = 10_000;
@@ -39,9 +42,16 @@ class ConcurrentTransfersTest {
     static final long MAX_AMOUNT = 1_000;
     static final long SEED = 20261009L;
 
-    @Autowired TransferService service;
     @Autowired LedgerRepository repository;
     @Autowired NamedParameterJdbcTemplate jdbc;
+
+    /**
+     * How many of the 10,000 requests may legitimately be abandoned (clean ContentionException, nothing posted)
+     * after exhausting a bounded retry budget. Zero for lock-based coordination, where waiting always ends in
+     * success. Optimistic coordination discards and retries conflicting work, so a few unlucky transfers can
+     * lose repeatedly; completion is probabilistic there, and 1% is a liveness bound, not a correctness one.
+     */
+    abstract int contentionTolerance();
 
     /**
      * Funded so that no transfer can legitimately fail -- even if every one of the 10,000 debited
@@ -51,18 +61,21 @@ class ConcurrentTransfersTest {
     @Test
     @Timeout(value = 180, unit = TimeUnit.SECONDS)
     void tenThousandConcurrentTransfersCreateAndDestroyNothing() throws Exception {
-        Pool pool = createPool(repository, service, ACCOUNTS, TRANSFERS * MAX_AMOUNT);
+        Pool pool = createPool(repository, service(), ACCOUNTS, TRANSFERS * MAX_AMOUNT);
         List<TransferRequest> workload = randomWorkload(pool, TRANSFERS, MAX_AMOUNT, SEED);
         String prefix = "load-" + UUID.randomUUID() + "-";
 
-        RunResult result = run(service, workload, THREADS, prefix);
+        RunResult result = run(service(), workload, THREADS, prefix);
 
         assertThat(result.unexpected()).as("unexpected failures").isEmpty();
         assertThat(result.deadlocks()).as("deadlock failures").isZero();
         assertThat(result.insufficientFunds()).isZero();
-        assertThat(result.succeeded()).isEqualTo(TRANSFERS);
+        assertThat(result.contention()).as("transfers abandoned after exhausting retries")
+                .isLessThanOrEqualTo(contentionTolerance());
+        assertThat(result.succeeded() + result.contention()).as("every request ended posted or abandoned")
+                .isEqualTo(TRANSFERS);
         assertMoneyConserved(jdbc, pool);
-        assertPostedExactly(jdbc, prefix, TRANSFERS);
+        assertPostedExactly(jdbc, prefix, result.succeeded());
     }
 
     /**
@@ -75,15 +88,16 @@ class ConcurrentTransfersTest {
     @Test
     @Timeout(value = 180, unit = TimeUnit.SECONDS)
     void contendedFundsCheckRejectsCleanlyNeverViaConstraintViolation() throws Exception {
-        Pool pool = createPool(repository, service, ACCOUNTS, 1_000);
+        Pool pool = createPool(repository, service(), ACCOUNTS, 1_000);
         List<TransferRequest> workload = randomWorkload(pool, TRANSFERS, 600, SEED);
         String prefix = "scarce-" + UUID.randomUUID() + "-";
 
-        RunResult result = run(service, workload, THREADS, prefix);
+        RunResult result = run(service(), workload, THREADS, prefix);
 
         assertThat(result.unexpected()).as("failures other than InsufficientFunds").isEmpty();
         assertThat(result.deadlocks()).isZero();
-        assertThat(result.succeeded() + result.insufficientFunds()).isEqualTo(TRANSFERS);
+        assertThat(result.contention()).isLessThanOrEqualTo(contentionTolerance());
+        assertThat(result.succeeded() + result.insufficientFunds() + result.contention()).isEqualTo(TRANSFERS);
         assertThat(result.insufficientFunds()).as("scenario must actually hit the funds limit").isPositive();
         assertThat(result.succeeded()).as("and must still complete some transfers").isPositive();
         assertMoneyConserved(jdbc, pool);

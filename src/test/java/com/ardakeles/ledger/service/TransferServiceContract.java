@@ -20,15 +20,17 @@ import org.springframework.context.annotation.Import;
 import org.springframework.jdbc.core.JdbcTemplate;
 
 /**
- * Single-threaded behaviour of the transfer. Reads are done with raw SQL on purpose so the
+ * Contract for any TransferService: single-threaded behaviour of the transfer. Reads are done with raw SQL on purpose so the
  * assertions do not depend on the repository code being tested. Each test creates its own
  * accounts and never deletes anything (the ledger is append-only), so tests are independent.
  */
 @SpringBootTest
 @Import(TestcontainersConfig.class)
-class TransferServiceTest {
+abstract class TransferServiceContract {
 
-    @Autowired TransferService service;
+    /** The implementation under test: the same assertions run against every TransferService strategy. */
+    abstract TransferService service();
+
     @Autowired LedgerRepository repository;
     @Autowired JdbcTemplate jdbc;
 
@@ -38,9 +40,9 @@ class TransferServiceTest {
         Account alice = repository.createAccount(Currency.USD);
         Account bob = repository.createAccount(Currency.USD);
 
-        service.execute(key(), new TransferRequest(funding.id(), alice.id(), 10_000, Currency.USD));
+        service().execute(key(), new TransferRequest(funding.id(), alice.id(), 10_000, Currency.USD));
         String key = key();
-        service.execute(key, new TransferRequest(alice.id(), bob.id(), 2_500, Currency.USD));
+        service().execute(key, new TransferRequest(alice.id(), bob.id(), 2_500, Currency.USD));
 
         assertThat(balance(funding)).isEqualTo(-10_000); // system account went negative to create the funds
         assertThat(balance(alice)).isEqualTo(7_500);
@@ -66,7 +68,7 @@ class TransferServiceTest {
         Account alice = funded(100);
         Account bob = repository.createAccount(Currency.USD);
 
-        service.execute(key(), new TransferRequest(alice.id(), bob.id(), 100, Currency.USD));
+        service().execute(key(), new TransferRequest(alice.id(), bob.id(), 100, Currency.USD));
 
         assertThat(balance(alice)).isZero();
         assertThat(balance(bob)).isEqualTo(100);
@@ -78,7 +80,7 @@ class TransferServiceTest {
         Account bob = repository.createAccount(Currency.USD);
         String key = key();
 
-        assertThatThrownBy(() -> service.execute(key, new TransferRequest(alice.id(), bob.id(), 101, Currency.USD)))
+        assertThatThrownBy(() -> service().execute(key, new TransferRequest(alice.id(), bob.id(), 101, Currency.USD)))
                 .isInstanceOf(InsufficientFundsException.class);
 
         assertThat(balance(alice)).isEqualTo(100);
@@ -90,7 +92,7 @@ class TransferServiceTest {
     void unknownAccountIsRejected() {
         Account alice = funded(100);
 
-        assertThatThrownBy(() -> service.execute(key(), new TransferRequest(alice.id(), Long.MAX_VALUE, 10, Currency.USD)))
+        assertThatThrownBy(() -> service().execute(key(), new TransferRequest(alice.id(), Long.MAX_VALUE, 10, Currency.USD)))
                 .isInstanceOf(AccountNotFoundException.class);
     }
 
@@ -99,7 +101,7 @@ class TransferServiceTest {
         Account usd = funded(100);
         Account eur = repository.createAccount(Currency.EUR);
 
-        assertThatThrownBy(() -> service.execute(key(), new TransferRequest(usd.id(), eur.id(), 10, Currency.USD)))
+        assertThatThrownBy(() -> service().execute(key(), new TransferRequest(usd.id(), eur.id(), 10, Currency.USD)))
                 .isInstanceOf(CurrencyMismatchException.class);
     }
 
@@ -108,7 +110,7 @@ class TransferServiceTest {
         Account alice = funded(100);
         Account bob = repository.createAccount(Currency.USD);
 
-        assertThatThrownBy(() -> service.execute(key(), new TransferRequest(alice.id(), bob.id(), 10, Currency.EUR)))
+        assertThatThrownBy(() -> service().execute(key(), new TransferRequest(alice.id(), bob.id(), 10, Currency.EUR)))
                 .isInstanceOf(CurrencyMismatchException.class);
     }
 
@@ -126,7 +128,7 @@ class TransferServiceTest {
     private Account funded(long amount) {
         Account funding = repository.createSystemAccount(Currency.USD);
         Account account = repository.createAccount(Currency.USD);
-        service.execute(key(), new TransferRequest(funding.id(), account.id(), amount, Currency.USD));
+        service().execute(key(), new TransferRequest(funding.id(), account.id(), amount, Currency.USD));
         return account;
     }
 

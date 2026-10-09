@@ -1,6 +1,7 @@
 package com.ardakeles.ledger.api;
 
 import com.ardakeles.ledger.domain.AccountNotFoundException;
+import com.ardakeles.ledger.domain.ContentionException;
 import com.ardakeles.ledger.domain.CurrencyMismatchException;
 import com.ardakeles.ledger.domain.IdempotencyKeyReuseException;
 import com.ardakeles.ledger.domain.InsufficientFundsException;
@@ -9,6 +10,7 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.dao.ConcurrencyFailureException;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.HttpStatusCode;
@@ -64,6 +66,24 @@ class ApiExceptionHandler extends ResponseEntityExceptionHandler {
         return problem(HttpStatus.UNPROCESSABLE_ENTITY, "INVALID_TRANSFER", "Invalid transfer", e.getMessage());
     }
 
+    /**
+     * Retry budget exhausted under heavy contention. Nothing was posted; retrying with the same
+     * Idempotency-Key is safe. 503 + Retry-After (not 409): there is nothing for the client to resolve.
+     */
+    @ExceptionHandler(ContentionException.class)
+    ResponseEntity<ProblemDetail> contention(ContentionException e) {
+        return retryable("CONTENTION", "Too much contention",
+                "The transfer could not be posted because of concurrent updates. Nothing was posted; retry with the same Idempotency-Key.");
+    }
+
+    /** Deadlock victim, lock timeout or serialization failure: the database aborted the transaction; nothing was posted. */
+    @ExceptionHandler(ConcurrencyFailureException.class)
+    ResponseEntity<ProblemDetail> transientFailure(ConcurrencyFailureException e) {
+        log.warn("transient concurrency failure: {}", e.getMessage());
+        return retryable("TRANSIENT_FAILURE", "Temporary failure",
+                "The transfer was aborted by a concurrency failure. Nothing was posted; retry with the same Idempotency-Key.");
+    }
+
     @ExceptionHandler(Exception.class)
     ProblemDetail unexpected(Exception e) {
         log.error("Unhandled exception", e);
@@ -81,6 +101,11 @@ class ApiExceptionHandler extends ResponseEntityExceptionHandler {
         ProblemDetail body = ex.getBody();
         body.setProperty("errors", errors);
         return handleExceptionInternal(ex, body, headers, status, request);
+    }
+
+    private static ResponseEntity<ProblemDetail> retryable(String code, String title, String detail) {
+        return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE).header(HttpHeaders.RETRY_AFTER, "1")
+                .body(problem(HttpStatus.SERVICE_UNAVAILABLE, code, title, detail));
     }
 
     private static ProblemDetail problem(HttpStatus status, String code, String title, String detail) {

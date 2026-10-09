@@ -11,7 +11,7 @@ import com.ardakeles.ledger.domain.TransferRequest;
 import com.ardakeles.ledger.repository.LedgerRepository;
 import com.ardakeles.ledger.service.Deadlocks;
 import com.ardakeles.ledger.service.LockingMode;
-import com.ardakeles.ledger.service.TransferService;
+import com.ardakeles.ledger.service.PessimisticTransferService;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Deque;
@@ -92,7 +92,8 @@ public class DemoService implements ApplicationRunner {
         }
     }
 
-    private final TransferService transfers;
+    /** Pinned to the pessimistic implementation: the demo is about lock ordering, whichever strategy the app defaults to. */
+    private final PessimisticTransferService transfers;
     private final LedgerRepository repository;
     private final LockingMode lockingMode;
     /** Distinguishes this process's idempotency keys from those of earlier runs against the same database. */
@@ -103,7 +104,7 @@ public class DemoService implements ApplicationRunner {
     private int runCounter;
     private final Deque<RunSummary> history = new ArrayDeque<>();
 
-    public DemoService(TransferService transfers, LedgerRepository repository, LockingMode lockingMode) {
+    public DemoService(PessimisticTransferService transfers, LedgerRepository repository, LockingMode lockingMode) {
         this.transfers = transfers;
         this.repository = repository;
         this.lockingMode = lockingMode;

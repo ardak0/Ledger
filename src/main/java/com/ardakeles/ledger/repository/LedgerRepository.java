@@ -126,6 +126,21 @@ public class LedgerRepository {
     }
 
     /**
+     * Optimistic variant of {@link #applyBalanceDelta}: applies the delta only if the row still has the
+     * version the caller read. Returns false (zero rows updated) if anyone changed the account since --
+     * the caller must then abandon its decision and retry. Under READ COMMITTED, if a concurrent
+     * transaction has the row locked, this statement waits for it to finish and re-checks the WHERE
+     * clause against the new row version, so a committed concurrent change always shows up as false.
+     */
+    public boolean applyBalanceDeltaIfVersion(long accountId, long deltaMinor, long expectedVersion) {
+        return dsl.update(ACCOUNT)
+                .set(ACCOUNT.BALANCE_MINOR, ACCOUNT.BALANCE_MINOR.plus(deltaMinor))
+                .set(ACCOUNT.VERSION, ACCOUNT.VERSION.plus(1))
+                .where(ACCOUNT.ID.eq(accountId).and(ACCOUNT.VERSION.eq(expectedVersion)))
+                .execute() == 1;
+    }
+
+    /**
      * Keyset pagination: entries of one account with id greater than {@code afterId}, oldest first,
      * served by the (account_id, id) index. Unlike OFFSET, new entries arriving mid-scan cannot
      * shift pages, and cost does not grow with page depth.

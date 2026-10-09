@@ -3,6 +3,7 @@ package com.ardakeles.ledger.concurrency;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import com.ardakeles.ledger.domain.Account;
+import com.ardakeles.ledger.domain.ContentionException;
 import com.ardakeles.ledger.domain.Currency;
 import com.ardakeles.ledger.domain.InsufficientFundsException;
 import com.ardakeles.ledger.domain.TransferRequest;
@@ -49,9 +50,27 @@ final class LoadHarness {
         }
     }
 
-    record RunResult(int succeeded, int insufficientFunds, int deadlocks, List<Throwable> unexpected, Duration elapsed) {
+    /**
+     * {@code contention} counts transfers abandoned after exhausting the optimistic retry budget. Latencies
+     * are for successful transfers only, retries included, sorted ascending.
+     */
+    record RunResult(int succeeded, int insufficientFunds, int deadlocks, int contention, List<Throwable> unexpected,
+                     Duration elapsed, long[] successLatenciesNanos) {
         int total() {
-            return succeeded + insufficientFunds + deadlocks + unexpected.size();
+            return succeeded + insufficientFunds + deadlocks + contention + unexpected.size();
+        }
+
+        double throughputPerSecond() {
+            return succeeded * 1000.0 / Math.max(1, elapsed.toMillis());
+        }
+
+        /** Nearest-rank percentile of successful-transfer latency, in milliseconds. */
+        double latencyMillis(double percentile) {
+            if (successLatenciesNanos.length == 0) {
+                return Double.NaN;
+            }
+            int rank = (int) Math.ceil(percentile / 100.0 * successLatenciesNanos.length);
+            return successLatenciesNanos[Math.max(0, rank - 1)] / 1_000_000.0;
         }
     }
 
@@ -73,6 +92,14 @@ final class LoadHarness {
      * be re-run with an identical request set. (Thread interleaving is of course not reproducible.)
      */
     static List<TransferRequest> randomWorkload(Pool pool, int count, long maxAmount, long seed) {
+        return randomWorkload(pool, count, maxAmount, seed, 0.0);
+    }
+
+    /**
+     * As above, but a {@code hotShare} fraction of transfers involves the pool's first account (as sender or
+     * receiver, chosen at random): the shape of a fee or system account that every payment touches.
+     */
+    static List<TransferRequest> randomWorkload(Pool pool, int count, long maxAmount, long seed, double hotShare) {
         SplittableRandom random = new SplittableRandom(seed);
         int n = pool.accounts().size();
         List<TransferRequest> requests = new ArrayList<>(count);
@@ -82,6 +109,16 @@ final class LoadHarness {
             if (to >= from) {
                 to++; // uniform over the other n-1 accounts, never equal to from
             }
+            if (hotShare > 0 && random.nextDouble() < hotShare) {
+                int other = 1 + random.nextInt(n - 1); // any account except the hot one (index 0)
+                if (random.nextBoolean()) {
+                    from = 0;
+                    to = other;
+                } else {
+                    from = other;
+                    to = 0;
+                }
+            }
             long amount = 1 + random.nextLong(maxAmount);
             requests.add(new TransferRequest(pool.accounts().get(from).id(), pool.accounts().get(to).id(), amount, Currency.USD));
         }
@@ -90,6 +127,13 @@ final class LoadHarness {
 
     static RunResult run(TransferService service, List<TransferRequest> workload, int threads, String keyPrefix)
             throws InterruptedException {
+        return run(service, workload, threads, keyPrefix, 150);
+    }
+
+    static RunResult run(TransferService service, List<TransferRequest> workload, int threads, String keyPrefix,
+                         int timeoutSeconds) throws InterruptedException {
+        AtomicInteger contention = new AtomicInteger();
+        long[] latencies = new long[workload.size()]; // 0 = did not succeed
         AtomicInteger succeeded = new AtomicInteger();
         AtomicInteger insufficient = new AtomicInteger();
         AtomicInteger deadlocks = new AtomicInteger();
@@ -98,14 +142,19 @@ final class LoadHarness {
         ExecutorService executor = Executors.newFixedThreadPool(threads);
         long start = System.nanoTime();
         for (int i = 0; i < workload.size(); i++) {
+            int index = i;
             String key = keyPrefix + i;
             TransferRequest request = workload.get(i);
             executor.submit(() -> {
                 try {
+                    long t0 = System.nanoTime();
                     service.execute(key, request);
+                    latencies[index] = Math.max(1, System.nanoTime() - t0);
                     succeeded.incrementAndGet();
                 } catch (InsufficientFundsException e) {
                     insufficient.incrementAndGet();
+                } catch (ContentionException e) {
+                    contention.incrementAndGet();
                 } catch (Throwable t) {
                     if (Deadlocks.isDeadlock(t)) {
                         deadlocks.incrementAndGet();
@@ -116,16 +165,17 @@ final class LoadHarness {
             });
         }
         executor.shutdown();
-        boolean finished = executor.awaitTermination(150, TimeUnit.SECONDS);
+        boolean finished = executor.awaitTermination(timeoutSeconds, TimeUnit.SECONDS);
         Duration elapsed = Duration.ofNanos(System.nanoTime() - start);
         executor.shutdownNow();
         assertThat(finished).as("workload finished before the timeout (a hang means a lock was never released)").isTrue();
 
-        RunResult result = new RunResult(succeeded.get(), insufficient.get(), deadlocks.get(),
-                List.copyOf(unexpected), elapsed);
-        log.info("LOAD threads={} requests={} succeeded={} insufficientFunds={} deadlocks={} other={} elapsed={}ms ({}/s)",
+        long[] successes = java.util.Arrays.stream(latencies).filter(l -> l > 0).sorted().toArray();
+        RunResult result = new RunResult(succeeded.get(), insufficient.get(), deadlocks.get(), contention.get(),
+                List.copyOf(unexpected), elapsed, successes);
+        log.info("LOAD threads={} requests={} succeeded={} insufficientFunds={} deadlocks={} contention={} other={} elapsed={}ms ({}/s)",
                 threads, workload.size(), result.succeeded(), result.insufficientFunds(), result.deadlocks(),
-                result.unexpected().size(), elapsed.toMillis(),
+                result.contention(), result.unexpected().size(), elapsed.toMillis(),
                 Math.round(workload.size() * 1000.0 / Math.max(1, elapsed.toMillis())));
         return result;
     }
