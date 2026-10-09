@@ -21,7 +21,7 @@ import org.testcontainers.utility.DockerImageName;
 public class TestcontainersConfig {
 
     // Keep in sync with <postgres.image> in pom.xml and docker-compose.yml.
-    static final DockerImageName POSTGRES_IMAGE = DockerImageName.parse("postgres:17-alpine");
+    public static final DockerImageName POSTGRES_IMAGE = DockerImageName.parse("postgres:17-alpine");
 
     static final PostgreSQLContainer<?> POSTGRES = new PostgreSQLContainer<>(POSTGRES_IMAGE)
             // fsync=off: speed (this is the container's default; withCommand replaces it, so restated).

@@ -20,6 +20,8 @@
         <java.version>21</java.version>
         <!-- One Postgres version for compose, codegen and tests. Keep in sync with docker-compose.yml. -->
         <postgres.image>postgres:17-alpine</postgres.image>
+        <!-- Benchmarks are slow and meaningless on shared CI runners; they run only with -Pbenchmark. -->
+        <excludedGroups>benchmark</excludedGroups>
         <!-- jooq.version, flyway.version, postgresql.version come from the Spring Boot BOM, so the
              codegen plugins below always match the runtime libraries. -->
     </properties>
@@ -76,6 +78,17 @@
             <scope>test</scope>
         </dependency>
     </dependencies>
+
+    <profiles>
+        <profile>
+            <!-- ./mvnw verify -Pbenchmark   runs ONLY the contention benchmark and writes target/benchmark/results.md -->
+            <id>benchmark</id>
+            <properties>
+                <excludedGroups>none</excludedGroups>
+                <groups>benchmark</groups>
+            </properties>
+        </profile>
+    </profiles>
 
     <build>
         <plugins>
