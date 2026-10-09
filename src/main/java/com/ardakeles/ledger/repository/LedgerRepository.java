@@ -6,9 +6,11 @@ import static com.ardakeles.ledger.jooq.Tables.TRANSFER;
 
 import com.ardakeles.ledger.domain.Account;
 import com.ardakeles.ledger.domain.Currency;
+import com.ardakeles.ledger.domain.LedgerEntry;
 import com.ardakeles.ledger.domain.Transfer;
 import com.ardakeles.ledger.domain.TransferRequest;
 import com.ardakeles.ledger.jooq.tables.records.AccountRecord;
+import java.util.List;
 import java.util.Optional;
 import org.jooq.DSLContext;
 import org.springframework.stereotype.Repository;
@@ -82,7 +84,26 @@ public class LedgerRepository {
         }
     }
 
+    /**
+     * Keyset pagination: entries of one account with id greater than {@code afterId}, oldest first,
+     * served by the (account_id, id) index. Unlike OFFSET, new entries arriving mid-scan cannot
+     * shift pages, and cost does not grow with page depth.
+     *
+     * <p>Known limitation: ids come from a sequence but commit in arbitrary order, so a slow
+     * transaction can commit an entry with a lower id after a reader has already paged past it.
+     * Acceptable for a statement view; a reconciling consumer would need a stronger scheme.
+     */
+    public List<LedgerEntry> findEntries(long accountId, long afterId, int limit) {
+        return dsl.selectFrom(ENTRY)
+                .where(ENTRY.ACCOUNT_ID.eq(accountId).and(ENTRY.ID.gt(afterId)))
+                .orderBy(ENTRY.ID.asc())
+                .limit(limit)
+                .fetch(r -> new LedgerEntry(r.getId(), r.getTransferId(), r.getAccountId(), r.getAmountMinor(),
+                        Currency.valueOf(r.getCurrency()), r.getCreatedAt()));
+    }
+
     private static Account toAccount(AccountRecord r) {
-        return new Account(r.getId(), Currency.valueOf(r.getCurrency()), r.getIsSystem(), r.getBalanceMinor(), r.getVersion());
+        return new Account(r.getId(), Currency.valueOf(r.getCurrency()), r.getIsSystem(), r.getBalanceMinor(), r.getVersion(),
+                r.getCreatedAt());
     }
 }

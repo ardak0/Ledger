@@ -17,13 +17,13 @@ class TransferRequestTest {
     @ValueSource(longs = {0, -1, Long.MIN_VALUE})
     void rejectsNonPositiveAmounts(long amount) {
         assertThatThrownBy(() -> new TransferRequest(1, 2, amount, Currency.USD))
-                .isInstanceOf(IllegalArgumentException.class);
+                .isInstanceOf(InvalidTransferException.class);
     }
 
     @Test
     void rejectsTransferToSameAccount() {
         assertThatThrownBy(() -> new TransferRequest(7, 7, 100, Currency.USD))
-                .isInstanceOf(IllegalArgumentException.class);
+                .isInstanceOf(InvalidTransferException.class);
     }
 
     @Test

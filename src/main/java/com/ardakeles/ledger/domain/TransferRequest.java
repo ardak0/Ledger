@@ -14,10 +14,10 @@ public record TransferRequest(long fromAccountId, long toAccountId, long amountM
     public TransferRequest {
         Objects.requireNonNull(currency, "currency");
         if (amountMinor <= 0) {
-            throw new IllegalArgumentException("amount must be positive, was " + amountMinor);
+            throw new InvalidTransferException("amount must be positive, was " + amountMinor);
         }
         if (fromAccountId == toAccountId) {
-            throw new IllegalArgumentException("cannot transfer from an account to itself");
+            throw new InvalidTransferException("cannot transfer from an account to itself");
         }
     }
 

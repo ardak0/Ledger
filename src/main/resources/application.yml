@@ -7,3 +7,24 @@ spring:
     username: ledger
     password: ledger
   # Flyway runs automatically at startup and applies db/migration/V*__*.sql in order.
+
+  # Strict JSON parsing. Spring Boot's defaults are lenient in ways that are unsafe for money:
+  jackson:
+    deserialization:
+      # {"amountMinor": 10.5} must be rejected, not silently truncated to 10.
+      accept-float-as-int: false
+      # {"isSystem": true} must be a 400, not silently ignored (the client would believe it worked).
+      fail-on-unknown-properties: true
+    mapper:
+      # {"amountMinor": "100"} (a string) must be rejected, not coerced.
+      allow-coercion-of-scalars: false
+
+management:
+  endpoints:
+    web:
+      base-path: /          # health is served at /health, as the API spec says
+      exposure:
+        include: health
+  endpoint:
+    health:
+      show-details: never   # status only; never leak infrastructure details
