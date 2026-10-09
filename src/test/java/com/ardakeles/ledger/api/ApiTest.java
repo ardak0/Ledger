@@ -199,6 +199,42 @@ class ApiTest {
                 .andExpect(jsonPath("$.errors.amountMinor").exists());
     }
 
+    // ---- idempotency over HTTP ----
+
+    @Test
+    void replayedRequestReturns200WithTheSameBodyAndReplayHeader() throws Exception {
+        long alice = fundedAccount(Currency.USD, 1_000);
+        long bob = newAccount(Currency.USD);
+        String key = key();
+
+        String first = mvc.perform(transfer(key, alice, bob, 400, "USD"))
+                .andExpect(status().isCreated())
+                .andExpect(header().doesNotExist("Idempotent-Replayed"))
+                .andReturn().getResponse().getContentAsString();
+        String second = mvc.perform(transfer(key, alice, bob, 400, "USD"))
+                .andExpect(status().isOk())
+                .andExpect(header().string("Idempotent-Replayed", "true"))
+                .andReturn().getResponse().getContentAsString();
+
+        assertThat(second).isEqualTo(first);
+        assertThat(balanceOf(alice)).isEqualTo(600); // moved once
+    }
+
+    @Test
+    void reusingAKeyWithADifferentBodyIs422() throws Exception {
+        long alice = fundedAccount(Currency.USD, 1_000);
+        long bob = newAccount(Currency.USD);
+        String key = key();
+        mvc.perform(transfer(key, alice, bob, 400, "USD")).andExpect(status().isCreated());
+
+        mvc.perform(transfer(key, alice, bob, 401, "USD"))
+                .andExpect(status().isUnprocessableEntity())
+                .andExpect(content().contentTypeCompatibleWith(PROBLEM))
+                .andExpect(jsonPath("$.code").value("IDEMPOTENCY_KEY_REUSED"));
+
+        assertThat(balanceOf(alice)).isEqualTo(600);
+    }
+
     // ---- statement ----
 
     @Test

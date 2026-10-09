@@ -2,6 +2,7 @@ package com.ardakeles.ledger.api;
 
 import com.ardakeles.ledger.domain.AccountNotFoundException;
 import com.ardakeles.ledger.domain.CurrencyMismatchException;
+import com.ardakeles.ledger.domain.IdempotencyKeyReuseException;
 import com.ardakeles.ledger.domain.InsufficientFundsException;
 import com.ardakeles.ledger.domain.InvalidTransferException;
 import java.util.LinkedHashMap;
@@ -50,6 +51,12 @@ class ApiExceptionHandler extends ResponseEntityExceptionHandler {
     @ExceptionHandler(CurrencyMismatchException.class)
     ProblemDetail currencyMismatch(CurrencyMismatchException e) {
         return problem(HttpStatus.UNPROCESSABLE_ENTITY, "CURRENCY_MISMATCH", "Currency mismatch", e.getMessage());
+    }
+
+    @ExceptionHandler(IdempotencyKeyReuseException.class)
+    ProblemDetail idempotencyKeyReuse(IdempotencyKeyReuseException e) {
+        return problem(HttpStatus.UNPROCESSABLE_ENTITY, "IDEMPOTENCY_KEY_REUSED", "Idempotency key reused",
+                "This Idempotency-Key was already used with a different request body.");
     }
 
     @ExceptionHandler(InvalidTransferException.class)

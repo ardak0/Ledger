@@ -3,6 +3,7 @@ package com.ardakeles.ledger.api;
 import com.ardakeles.ledger.domain.Currency;
 import com.ardakeles.ledger.domain.Transfer;
 import com.ardakeles.ledger.domain.TransferRequest;
+import com.ardakeles.ledger.domain.TransferResult;
 import com.ardakeles.ledger.service.TransferService;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotNull;
@@ -55,7 +56,12 @@ class TransferController {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
                     "Idempotency-Key must be 1-" + MAX_KEY_LENGTH + " non-blank characters");
         }
-        Transfer transfer = transfers.execute(idempotencyKey, request.toDomain());
-        return ResponseEntity.status(HttpStatus.CREATED).body(TransferResponse.from(transfer));
+        TransferResult result = transfers.execute(idempotencyKey, request.toDomain());
+        TransferResponse body = TransferResponse.from(result.transfer());
+        if (result.replayed()) {
+            // 200, not 201: nothing was created. The header lets a client tell a replay from a first run.
+            return ResponseEntity.ok().header("Idempotent-Replayed", "true").body(body);
+        }
+        return ResponseEntity.status(HttpStatus.CREATED).body(body);
     }
 }

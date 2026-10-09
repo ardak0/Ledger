@@ -7,6 +7,7 @@ import static com.ardakeles.ledger.jooq.Tables.TRANSFER;
 import com.ardakeles.ledger.domain.Account;
 import com.ardakeles.ledger.domain.Currency;
 import com.ardakeles.ledger.domain.LedgerEntry;
+import com.ardakeles.ledger.domain.StoredTransfer;
 import com.ardakeles.ledger.domain.Transfer;
 import com.ardakeles.ledger.domain.TransferRequest;
 import com.ardakeles.ledger.jooq.tables.records.AccountRecord;
@@ -50,13 +51,31 @@ public class LedgerRepository {
         return dsl.selectFrom(ACCOUNT).where(ACCOUNT.ID.eq(id)).fetchOptional().map(LedgerRepository::toAccount);
     }
 
-    public Transfer insertTransfer(String idempotencyKey, TransferRequest request) {
-        var row = dsl.insertInto(TRANSFER)
+    /**
+     * Claims an idempotency key by inserting the transfer row, atomically, in one statement.
+     *
+     * <p>Returns the new transfer if this call won the key, or empty if the key already exists.
+     * Under READ COMMITTED, if another transaction is inserting the same key but has not yet
+     * committed, this statement <em>blocks</em> until that transaction finishes: if it commits we
+     * get "conflict" (empty), if it rolls back we proceed and win. No exception is raised either
+     * way, so the surrounding transaction stays usable -- unlike a plain INSERT, where a unique
+     * violation aborts the transaction.
+     */
+    public Optional<Transfer> insertTransferIfAbsent(String idempotencyKey, TransferRequest request) {
+        return dsl.insertInto(TRANSFER)
                 .set(TRANSFER.IDEMPOTENCY_KEY, idempotencyKey)
                 .set(TRANSFER.REQUEST_HASH, request.sha256())
+                .onConflict(TRANSFER.IDEMPOTENCY_KEY).doNothing()
                 .returningResult(TRANSFER.ID, TRANSFER.CREATED_AT)
-                .fetchSingle();
-        return new Transfer(row.value1(), idempotencyKey, request, row.value2());
+                .fetchOptional()
+                .map(row -> new Transfer(row.value1(), idempotencyKey, request, row.value2()));
+    }
+
+    public Optional<StoredTransfer> findTransferByKey(String idempotencyKey) {
+        return dsl.select(TRANSFER.ID, TRANSFER.REQUEST_HASH, TRANSFER.CREATED_AT)
+                .from(TRANSFER)
+                .where(TRANSFER.IDEMPOTENCY_KEY.eq(idempotencyKey))
+                .fetchOptional(r -> new StoredTransfer(r.value1(), r.value2(), r.value3()));
     }
 
     /** {@code amountMinor} is signed: negative debits the account, positive credits it. */
