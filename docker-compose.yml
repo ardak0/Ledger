@@ -1,4 +1,11 @@
-# Local development database. Keep the image tag in sync with <postgres.image> in pom.xml.
+# Local development. Keep the db image tag in sync with <postgres.image> in pom.xml.
+#
+#   db only (run the app from your IDE / `./mvnw spring-boot:run`):   docker compose up -d db
+#   db + app with the live demo at http://localhost:8080/demo:         ./mvnw -DskipTests package && docker compose up --build
+#
+# The app service enables the `demo` profile, which exposes /demo and a switch that makes the ledger deadlock
+# ON PURPOSE. That is right for a local demo and wrong anywhere else: remove SPRING_PROFILES_ACTIVE for a
+# production-like run.
 services:
   db:
     image: postgres:17-alpine
@@ -19,6 +26,17 @@ services:
       interval: 2s
       timeout: 3s
       retries: 15
+
+  app:
+    build: .
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://db:5432/ledger
+      SPRING_PROFILES_ACTIVE: demo
+    ports:
+      - "8080:8080"
 
 volumes:
   ledger-pgdata:
