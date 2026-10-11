@@ -3,9 +3,12 @@ package com.ardakeles.ledger.demo;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
 
-import com.ardakeles.ledger.TestcontainersConfig;
 import com.ardakeles.ledger.demo.DemoSnapshot.AccountView;
-import com.ardakeles.ledger.service.LockingMode;
+import com.ardakeles.ledger.domain.Account;
+import com.ardakeles.ledger.domain.Currency;
+import com.ardakeles.ledger.domain.TransferRequest;
+import com.ardakeles.ledger.repository.LedgerRepository;
+import com.ardakeles.ledger.service.TransferService;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.net.URI;
@@ -19,6 +22,8 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.UUID;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
@@ -45,12 +50,13 @@ import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
         properties = {"ledger.demo.enabled=true", "spring.datasource.hikari.maximum-pool-size=40"})
-@Import(TestcontainersConfig.class)
+@Import(DemoDatabaseConfig.class)
 @Timeout(value = 120, unit = TimeUnit.SECONDS)
 class DemoTest {
 
     @Autowired DemoService demo;
-    @Autowired LockingMode lockingMode;
+    @Autowired TransferService apiTransfers; // what the REST API injects
+    @Autowired LedgerRepository repository;
     @Autowired TestRestTemplate rest;
     @Autowired NamedParameterJdbcTemplate jdbc;
     @Autowired ObjectMapper mapper;
@@ -58,8 +64,54 @@ class DemoTest {
 
     @AfterEach
     void backToSafeAndIdle() {
-        lockingMode.setOrdered(true);
+        demo.setSafeMode(true);
         awaitIdle();
+    }
+
+    /**
+     * The unsafe switch must reach only the demo's own transfers. With it OFF, hammer the API's TransferService
+     * with opposite transfers between two accounts -- the exact pattern that deadlocks under unordered locking
+     * (see UnorderedLockingDeadlockTest) -- and require that every one succeeds.
+     */
+    @Test
+    void unsafeModeDoesNotReachTheApisTransferService() throws Exception {
+        setMode(false);
+        Account funding = repository.createSystemAccount(Currency.USD);
+        Account a = repository.createAccount(Currency.USD);
+        Account b = repository.createAccount(Currency.USD);
+        String prefix = "isolation-" + UUID.randomUUID() + "-";
+        apiTransfers.execute(prefix + "fund-a", new TransferRequest(funding.id(), a.id(), 1_000_000, Currency.USD));
+        apiTransfers.execute(prefix + "fund-b", new TransferRequest(funding.id(), b.id(), 1_000_000, Currency.USD));
+
+        int threads = 16;
+        int perThread = 25;
+        AtomicInteger failures = new AtomicInteger();
+        ExecutorService pool = Executors.newFixedThreadPool(threads);
+        try {
+            List<Future<?>> done = new ArrayList<>();
+            for (int t = 0; t < threads; t++) {
+                int thread = t;
+                done.add(pool.submit(() -> {
+                    for (int i = 0; i < perThread; i++) {
+                        boolean forward = (thread + i) % 2 == 0;
+                        TransferRequest r = forward ? new TransferRequest(a.id(), b.id(), 1, Currency.USD)
+                                : new TransferRequest(b.id(), a.id(), 1, Currency.USD);
+                        try {
+                            apiTransfers.execute(prefix + thread + "-" + i, r);
+                        } catch (RuntimeException e) {
+                            failures.incrementAndGet();
+                        }
+                    }
+                }));
+            }
+            for (Future<?> f : done) {
+                f.get(60, TimeUnit.SECONDS);
+            }
+        } finally {
+            pool.shutdownNow();
+        }
+        assertThat(demo.isSafeMode()).as("the demo is still unsafe throughout").isFalse();
+        assertThat(failures.get()).as("API transfers that failed (deadlocks) while the demo was unsafe").isZero();
     }
 
     @Test
@@ -201,7 +253,7 @@ class DemoTest {
     private void setMode(boolean safe) {
         assertThat(rest.postForEntity("/demo/mode", Map.of("safe", safe), Map.class).getStatusCode())
                 .isEqualTo(HttpStatus.OK);
-        assertThat(lockingMode.isOrdered()).isEqualTo(safe);
+        assertThat(demo.isSafeMode()).isEqualTo(safe);
     }
 
     private void awaitIdle() {
@@ -228,7 +280,7 @@ class DemoTest {
                 .as("snapshots taken while the run was in progress").isGreaterThanOrEqualTo(3);
         for (DemoSnapshot s : samples) {
             assertThat(s.poolSumMinor()).as("pool total in a snapshot").isEqualTo(s.expectedPoolSumMinor());
-            assertThat(s.globalSumMinor()).as("sum over all accounts").isZero();
+            assertThat(s.globalSumMinor()).as("sum over all USD accounts").isZero();
         }
     }
 

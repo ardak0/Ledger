@@ -163,10 +163,40 @@ class ApiTest {
     }
 
     @Test
-    void blankOrOversizedIdempotencyKeyIs400() throws Exception {
-        for (String badKey : List.of("   ", "k".repeat(256))) {
-            mvc.perform(transfer(badKey, 1, 2, 10, "USD")).andExpect(status().isBadRequest());
+    void blankOversizedOrUnsafeIdempotencyKeyIs400() throws Exception {
+        // Blank, too long, and characters that could forge log fields or smuggle control characters.
+        for (String badKey : List.of("   ", "k".repeat(256), "has space", "transferId=1", "quote\"", "tab\tkey", "ключ")) {
+            mvc.perform(transfer(badKey, 1, 2, 10, "USD"))
+                    .andExpect(status().isBadRequest())
+                    .andExpect(jsonPath("$.code").value("INVALID_REQUEST"));
         }
+    }
+
+    @Test
+    void commonIdempotencyKeyFormatsAreAccepted() throws Exception {
+        long alice = fundedAccount(Currency.USD, 1_000);
+        long bob = newAccount(Currency.USD);
+        for (String goodKey : List.of(key(), "pay-2026-0001", "order:42.retry_1", "01HZX3K8Q9V7RD4N2B6M5T0YWC",
+                "k".repeat(255))) {
+            mvc.perform(transfer(goodKey, alice, bob, 1, "USD")).andExpect(status().isCreated());
+        }
+    }
+
+    /** Every error body carries a stable code, including the ones Spring itself produces. */
+    @Test
+    void frameworkProducedErrorsCarryACodeToo() throws Exception {
+        mvc.perform(post("/transfers").contentType(MediaType.APPLICATION_JSON)  // missing Idempotency-Key
+                        .content("{\"fromAccountId\":1,\"toAccountId\":2,\"amountMinor\":10,\"currency\":\"USD\"}"))
+                .andExpect(status().isBadRequest()).andExpect(jsonPath("$.code").value("INVALID_REQUEST"));
+        mvc.perform(post("/transfers").header("Idempotency-Key", key()).contentType(MediaType.APPLICATION_JSON)
+                        .content("{not json"))
+                .andExpect(status().isBadRequest()).andExpect(jsonPath("$.code").value("INVALID_REQUEST"));
+        mvc.perform(post("/accounts").contentType(MediaType.APPLICATION_JSON).content("{}"))  // bean validation
+                .andExpect(status().isBadRequest()).andExpect(jsonPath("$.code").value("INVALID_REQUEST"));
+        mvc.perform(get("/no-such-endpoint"))
+                .andExpect(status().isNotFound()).andExpect(jsonPath("$.code").value("NOT_FOUND"));
+        mvc.perform(get("/transfers"))
+                .andExpect(status().isMethodNotAllowed()).andExpect(jsonPath("$.code").value("METHOD_NOT_ALLOWED"));
     }
 
     /** A missing amount must not silently become 0, and numbers must stay integers. */
@@ -271,10 +301,11 @@ class ApiTest {
     void statementRejectsBadPagingAndUnknownAccounts() throws Exception {
         long alice = newAccount(Currency.USD);
 
-        mvc.perform(get("/accounts/{id}/entries?limit=0", alice)).andExpect(status().isBadRequest());
-        mvc.perform(get("/accounts/{id}/entries?limit=201", alice)).andExpect(status().isBadRequest());
-        mvc.perform(get("/accounts/{id}/entries?after=-1", alice)).andExpect(status().isBadRequest());
-        mvc.perform(get("/accounts/{id}/entries?after=abc", alice)).andExpect(status().isBadRequest());
+        for (String query : List.of("limit=0", "limit=201", "after=-1", "after=abc")) {
+            mvc.perform(get("/accounts/{id}/entries?" + query, alice))
+                    .andExpect(status().isBadRequest())
+                    .andExpect(jsonPath("$.code").value("INVALID_REQUEST"));
+        }
         mvc.perform(get("/accounts/{id}/entries", Long.MAX_VALUE)).andExpect(status().isNotFound());
         mvc.perform(get("/accounts/{id}/entries", alice))
                 .andExpect(status().isOk())

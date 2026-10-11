@@ -12,6 +12,8 @@ import com.ardakeles.ledger.repository.LedgerRepository;
 import com.ardakeles.ledger.service.Deadlocks;
 import com.ardakeles.ledger.service.LockingMode;
 import com.ardakeles.ledger.service.PessimisticTransferService;
+import com.ardakeles.ledger.service.TransferService;
+import java.time.Duration;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Deque;
@@ -26,10 +28,12 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.ApplicationArguments;
 import org.springframework.boot.ApplicationRunner;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.PlatformTransactionManager;
 
 /**
  * Drives the chaos demo: owns a small funded pool of accounts, fires bursts of random transfers
@@ -92,10 +96,13 @@ public class DemoService implements ApplicationRunner {
         }
     }
 
-    /** Pinned to the pessimistic implementation: the demo is about lock ordering, whichever strategy the app defaults to. */
-    private final PessimisticTransferService transfers;
+    /**
+     * The demo's OWN pessimistic TransferService, wired to the demo's own {@link LockingMode}. It is not a Spring
+     * bean, so the unsafe switch reaches only the demo's transfers: the API's TransferService has no switch.
+     */
+    private final TransferService transfers;
     private final LedgerRepository repository;
-    private final LockingMode lockingMode;
+    private final LockingMode lockingMode = new LockingMode(true);
     /** Distinguishes this process's idempotency keys from those of earlier runs against the same database. */
     private final String keyPrefix = "demo-" + UUID.randomUUID().toString().substring(0, 8) + "-";
 
@@ -104,10 +111,11 @@ public class DemoService implements ApplicationRunner {
     private int runCounter;
     private final Deque<RunSummary> history = new ArrayDeque<>();
 
-    public DemoService(PessimisticTransferService transfers, LedgerRepository repository, LockingMode lockingMode) {
-        this.transfers = transfers;
+    public DemoService(LedgerRepository repository, PlatformTransactionManager transactionManager,
+                       @Value("${ledger.lock-timeout:PT5S}") Duration lockTimeout) {
         this.repository = repository;
-        this.lockingMode = lockingMode;
+        this.transfers = PessimisticTransferService.withLockingMode(repository, transactionManager, lockTimeout,
+                lockingMode);
     }
 
     /**
@@ -130,8 +138,13 @@ public class DemoService implements ApplicationRunner {
                 ACCOUNTS, INITIAL_BALANCE_MINOR, funding.id());
     }
 
+    /** Switches the demo's own transfers between ordered (safe) and unordered locking. Never affects the API. */
     public void setSafeMode(boolean safe) {
         lockingMode.setOrdered(safe);
+    }
+
+    public boolean isSafeMode() {
+        return lockingMode.isOrdered();
     }
 
     /** Starts a burst of {@value #TRANSFERS_PER_RUN} random transfers in the background; returns the run number. */
@@ -248,7 +261,7 @@ public class DemoService implements ApplicationRunner {
         if (p == null) {
             return new DemoSnapshot(false, mode, false, WORKERS, List.of(), 0, 0, 0, Counters.none(), recent);
         }
-        BalanceSnapshot balances = repository.snapshotBalances(p.ids());
+        BalanceSnapshot balances = repository.snapshotBalances(p.ids(), Currency.USD);
         List<AccountView> views = new ArrayList<>();
         long poolSum = 0;
         for (int i = 0; i < p.accounts().size(); i++) {
@@ -258,7 +271,7 @@ public class DemoService implements ApplicationRunner {
             views.add(new AccountView(id, String.valueOf((char) ('A' + i)), balance));
         }
         return new DemoSnapshot(true, mode, run != null && run.running, WORKERS, views, poolSum, p.expectedSumMinor(),
-                balances.globalSumMinor(), run == null ? Counters.none() : run.counters(), recent);
+                balances.currencySumMinor(), run == null ? Counters.none() : run.counters(), recent);
     }
 
     private static ThreadFactory daemonThreads(String prefix) {

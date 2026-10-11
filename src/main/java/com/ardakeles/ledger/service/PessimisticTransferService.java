@@ -6,22 +6,54 @@ import com.ardakeles.ledger.domain.Transfer;
 import com.ardakeles.ledger.domain.TransferRequest;
 import com.ardakeles.ledger.domain.TransferResult;
 import com.ardakeles.ledger.repository.LedgerRepository;
+import java.time.Duration;
 import java.util.Optional;
+import java.util.function.BooleanSupplier;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Isolation;
-import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.TransactionDefinition;
+import org.springframework.transaction.support.TransactionTemplate;
 
 @Service
 public class PessimisticTransferService implements TransferService {
 
     private final LedgerRepository repository;
     private final TransferPosting posting;
-    private final LockingMode lockingMode;
+    private final TransactionTemplate tx;
+    private final Duration lockTimeout;
+    /** Always true for the application's bean; only {@link #withLockingMode} instances can say otherwise. */
+    private final BooleanSupplier ordered;
 
-    public PessimisticTransferService(LedgerRepository repository, TransferPosting posting, LockingMode lockingMode) {
+    @Autowired
+    public PessimisticTransferService(LedgerRepository repository, TransferPosting posting,
+                                      PlatformTransactionManager transactionManager,
+                                      @Value("${ledger.lock-timeout:PT5S}") Duration lockTimeout) {
+        this(repository, posting, transactionManager, lockTimeout, () -> true);
+    }
+
+    private PessimisticTransferService(LedgerRepository repository, TransferPosting posting,
+                                       PlatformTransactionManager transactionManager, Duration lockTimeout,
+                                       BooleanSupplier ordered) {
         this.repository = repository;
         this.posting = posting;
-        this.lockingMode = lockingMode;
+        this.lockTimeout = TransferPosting.requireValidLockTimeout(lockTimeout);
+        this.ordered = ordered;
+        this.tx = new TransactionTemplate(transactionManager);
+        this.tx.setIsolationLevel(TransactionDefinition.ISOLATION_READ_COMMITTED);
+    }
+
+    /**
+     * DELIBERATE DEMONSTRATION OF A BUG -- see {@link LockingMode}. Returns a separate instance, NOT a Spring
+     * bean, whose lock order follows {@code lockingMode}. Used only by the /demo page and the negative-control
+     * test; the application's injected {@link TransferService} is never this instance and has no switch.
+     */
+    public static PessimisticTransferService withLockingMode(LedgerRepository repository,
+                                                             PlatformTransactionManager transactionManager,
+                                                             Duration lockTimeout, LockingMode lockingMode) {
+        return new PessimisticTransferService(repository, new TransferPosting(repository), transactionManager,
+                lockTimeout, lockingMode::isOrdered);
     }
 
     /**
@@ -29,6 +61,8 @@ public class PessimisticTransferService implements TransferService {
      *
      * <p>Order of operations matters, and each step is placed deliberately:
      * <ol>
+     *   <li><b>Bound lock waits</b> for this transaction ({@code SET LOCAL lock_timeout}), so a stuck lock
+     *       holder fails this transfer with a retryable error instead of pinning a pooled connection forever.</li>
      *   <li><b>Claim the idempotency key</b> by inserting the transfer row. A duplicate waits here,
      *       holding no account locks, so it cannot deadlock with real work. If this transaction
      *       later fails, the claim rolls back with it, so a failed attempt does not burn the key.</li>
@@ -44,10 +78,17 @@ public class PessimisticTransferService implements TransferService {
      * <p>READ COMMITTED is sufficient (SERIALIZABLE is not needed) because the invariant is
      * per-row and every writer takes the row lock first; it is spelled out here because the
      * argument depends on it. The deferred trigger then verifies the double-entry sum at commit.
+     *
+     * <p>The transaction is opened with a {@link TransactionTemplate} rather than {@code @Transactional}
+     * so that it also applies to {@link #withLockingMode} instances, which are not Spring proxies.
      */
     @Override
-    @Transactional(isolation = Isolation.READ_COMMITTED)
     public TransferResult execute(String idempotencyKey, TransferRequest request) {
+        return tx.execute(status -> post(idempotencyKey, request));
+    }
+
+    private TransferResult post(String idempotencyKey, TransferRequest request) {
+        repository.setLocalLockTimeout(lockTimeout);
         Optional<Transfer> claimed = posting.claim(idempotencyKey, request);
         if (claimed.isEmpty()) {
             return posting.replay(idempotencyKey, request);
@@ -78,9 +119,9 @@ public class PessimisticTransferService implements TransferService {
     private LockedAccounts lockAccounts(TransferRequest request) {
         long fromId = request.fromAccountId();
         long toId = request.toAccountId();
-        boolean ordered = lockingMode.isOrdered(); // read once so both locks follow the same rule
-        long firstId = ordered ? Math.min(fromId, toId) : fromId; // unordered: see LockingMode
-        long secondId = ordered ? Math.max(fromId, toId) : toId;
+        boolean inOrder = ordered.getAsBoolean(); // read once so both locks follow the same rule
+        long firstId = inOrder ? Math.min(fromId, toId) : fromId; // unordered: see LockingMode
+        long secondId = inOrder ? Math.max(fromId, toId) : toId;
 
         Account first = repository.lockAccount(firstId).orElseThrow(() -> new AccountNotFoundException(firstId));
         Account second = repository.lockAccount(secondId).orElseThrow(() -> new AccountNotFoundException(secondId));

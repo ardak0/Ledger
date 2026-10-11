@@ -7,6 +7,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 import com.ardakeles.ledger.TestcontainersConfig;
 import com.ardakeles.ledger.service.LockingMode;
+import org.springframework.context.ApplicationContext;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
@@ -25,11 +26,13 @@ import org.springframework.test.web.servlet.MockMvc;
 class DemoDisabledByDefaultTest {
 
     @Autowired MockMvc mvc;
-    @Autowired LockingMode lockingMode;
+    @Autowired ApplicationContext context;
 
+    /** The unsafe switch is not a bean at all: nothing in the application can be told to lock out of order. */
     @Test
-    void lockingIsOrderedByDefault() {
-        assertThat(lockingMode.isOrdered()).isTrue();
+    void thereIsNoLockingSwitchInTheApplication() {
+        assertThat(context.getBeanNamesForType(LockingMode.class)).isEmpty();
+        assertThat(context.getBeanNamesForType(DemoService.class)).isEmpty();
     }
 
     @Test
@@ -40,8 +43,6 @@ class DemoDisabledByDefaultTest {
         mvc.perform(post("/demo/fire")).andExpect(status().isNotFound());
         mvc.perform(post("/demo/mode").contentType(MediaType.APPLICATION_JSON).content("{\"safe\":false}"))
                 .andExpect(status().isNotFound());
-
-        assertThat(lockingMode.isOrdered()).as("a request to flip the mode must have had no effect").isTrue();
     }
 
     @Test

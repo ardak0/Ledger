@@ -12,7 +12,10 @@ import com.ardakeles.ledger.concurrency.LoadHarness.Pool;
 import com.ardakeles.ledger.concurrency.LoadHarness.RunResult;
 import com.ardakeles.ledger.domain.TransferRequest;
 import com.ardakeles.ledger.repository.LedgerRepository;
+import com.ardakeles.ledger.service.LockingMode;
+import com.ardakeles.ledger.service.PessimisticTransferService;
 import com.ardakeles.ledger.service.TransferService;
+import java.time.Duration;
 import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.TimeUnit;
@@ -22,9 +25,11 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.annotation.Import;
 import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
+import org.springframework.transaction.PlatformTransactionManager;
 
 /**
- * NEGATIVE CONTROL -- this test turns ordered locking OFF on purpose (ledger.locking.ordered=false).
+ * NEGATIVE CONTROL -- this test turns ordered locking OFF on purpose, on its own TransferService instance
+ * (the application's has no such switch).
  *
  * <p>It proves two things the main test cannot:
  * <ol>
@@ -37,7 +42,7 @@ import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
  * </ol>
  * A small account pool is used so opposing transfers (A->B vs B->A) collide almost every run.
  */
-@SpringBootTest(properties = {"spring.datasource.hikari.maximum-pool-size=20", "ledger.locking.ordered=false"})
+@SpringBootTest(properties = "spring.datasource.hikari.maximum-pool-size=20")
 @Import(TestcontainersConfig.class)
 class UnorderedLockingDeadlockTest {
 
@@ -46,13 +51,15 @@ class UnorderedLockingDeadlockTest {
     static final int ACCOUNTS = 6;
     static final long MAX_AMOUNT = 1_000;
 
-    @Autowired TransferService service;
     @Autowired LedgerRepository repository;
+    @Autowired PlatformTransactionManager transactionManager;
     @Autowired NamedParameterJdbcTemplate jdbc;
 
     @Test
     @Timeout(value = 180, unit = TimeUnit.SECONDS)
     void unorderedLockingDeadlocksButNeverCorruptsTheLedger() throws Exception {
+        TransferService service = PessimisticTransferService.withLockingMode(repository, transactionManager,
+                Duration.ofSeconds(5), new LockingMode(false));
         Pool pool = createPool(repository, service, ACCOUNTS, TRANSFERS * MAX_AMOUNT);
         List<TransferRequest> workload = randomWorkload(pool, TRANSFERS, MAX_AMOUNT, 7L);
         String prefix = "unordered-" + UUID.randomUUID() + "-";

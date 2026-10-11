@@ -12,6 +12,8 @@ import org.testcontainers.containers.PostgreSQLContainer;
 
 /**
  * A separate database inside the shared Postgres container, for tests of whole-database jobs (reconciliation).
+ * Other suites that assert something about the WHOLE database get their own database the same way, via
+ * {@link #create} and {@link #connectionTo} (see the demo's {@code DemoDatabaseConfig}).
  *
  * <p>Such a job reads EVERYTHING, so it is only meaningful against data nobody else has dirtied. Other tests
  * (notably the raw-SQL schema tests, which set balances with no matching entries) legitimately leave rows
@@ -25,19 +27,29 @@ public class IsolatedDatabaseConfig {
     static final String DATABASE = "reconciliation";
 
     static {
-        PostgreSQLContainer<?> postgres = TestcontainersConfig.POSTGRES; // class init starts the shared container
-        try (Connection admin = DriverManager.getConnection(postgres.getJdbcUrl(), postgres.getUsername(), postgres.getPassword());
-             Statement statement = admin.createStatement()) {
-            statement.execute("CREATE DATABASE " + DATABASE);
-        } catch (SQLException e) {
-            throw new IllegalStateException("could not create the isolated test database", e);
-        }
+        create(DATABASE);
     }
 
     @Bean
     DynamicPropertyRegistrar isolatedPostgresConnection() {
+        return connectionTo(DATABASE);
+    }
+
+    /** Creates {@code database} in the shared container. Call once per JVM, from a static initializer. */
+    public static void create(String database) {
+        PostgreSQLContainer<?> postgres = TestcontainersConfig.POSTGRES; // class init starts the shared container
+        try (Connection admin = DriverManager.getConnection(postgres.getJdbcUrl(), postgres.getUsername(), postgres.getPassword());
+             Statement statement = admin.createStatement()) {
+            statement.execute("CREATE DATABASE " + database);
+        } catch (SQLException e) {
+            throw new IllegalStateException("could not create the isolated test database " + database, e);
+        }
+    }
+
+    /** Points a Spring context at {@code database} in the shared container. */
+    public static DynamicPropertyRegistrar connectionTo(String database) {
         PostgreSQLContainer<?> postgres = TestcontainersConfig.POSTGRES;
-        String url = postgres.getJdbcUrl().replaceFirst("/" + Pattern.quote(postgres.getDatabaseName()) + "(\\?|$)", "/" + DATABASE + "$1");
+        String url = postgres.getJdbcUrl().replaceFirst("/" + Pattern.quote(postgres.getDatabaseName()) + "(\\?|$)", "/" + database + "$1");
         return registry -> {
             registry.add("spring.datasource.url", () -> url);
             registry.add("spring.datasource.username", postgres::getUsername);

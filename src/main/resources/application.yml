@@ -30,6 +30,10 @@ management:
       show-details: never   # status only; never leak infrastructure details
 
 ledger:
+  # Longest any transfer statement waits for a row lock (SET LOCAL lock_timeout, per transaction). A stuck lock
+  # holder then fails waiting transfers with a retryable 503 instead of pinning pooled connections indefinitely.
+  # Far above a normal lock wait (milliseconds), far below a client timeout. Must be at least 1ms (0 = no limit).
+  lock-timeout: PT5S
   reconciliation:
     enabled: true
     initial-delay: PT1M     # ISO-8601 durations

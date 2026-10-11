@@ -4,7 +4,8 @@ import java.util.List;
 
 /**
  * Everything the /demo page renders, sent as one JSON object per SSE event. The balances and both
- * sums come from a single SQL statement, so they are mutually consistent.
+ * sums come from a single SQL statement, so they are mutually consistent. {@code globalSumMinor} is the
+ * sum over every USD account in the database (the demo's currency); it must always be zero.
  */
 public record DemoSnapshot(
         boolean ready,

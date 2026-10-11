@@ -17,6 +17,7 @@ import com.ardakeles.ledger.domain.Transfer;
 import com.ardakeles.ledger.domain.TransferRequest;
 import com.ardakeles.ledger.jooq.tables.records.AccountRecord;
 import java.math.BigDecimal;
+import java.time.Duration;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -75,6 +76,16 @@ public class LedgerRepository {
     public Optional<Account> lockAccount(long id) {
         return dsl.selectFrom(ACCOUNT).where(ACCOUNT.ID.eq(id)).forUpdate().fetchOptional()
                 .map(LedgerRepository::toAccount);
+    }
+
+    /**
+     * Bounds how long any statement in the current transaction may wait for a lock ({@code SET LOCAL
+     * lock_timeout}); the setting reverts when the transaction ends, so pooled connections are not affected.
+     * A statement that hits it fails with SQLSTATE 55P03, which surfaces as a retryable
+     * {@code ConcurrencyFailureException}; the transaction then rolls back completely.
+     */
+    public void setLocalLockTimeout(Duration timeout) {
+        dsl.fetchSingle("SELECT set_config('lock_timeout', ?, true)", timeout.toMillis() + "ms");
     }
 
     /**
@@ -163,22 +174,33 @@ public class LedgerRepository {
     }
 
     /**
-     * Balances of {@code accountIds} and the sum over every account, in ONE statement. A statement sees
-     * a single snapshot of committed data (READ COMMITTED takes its snapshot per statement), so both
-     * figures are mutually consistent: no transfer can be half-visible. Plain read, takes no locks.
+     * Balances of {@code accountIds} and the sum over every account in {@code currency}, in ONE statement. A
+     * statement sees a single snapshot of committed data (READ COMMITTED takes its snapshot per statement), so
+     * both figures are mutually consistent: no transfer can be half-visible. Plain read, takes no locks.
+     *
+     * <p>The total is per currency because a sum across currencies means nothing. Because money only enters
+     * through system accounts, it is zero for every currency. The total comes from a one-row subquery that is
+     * outer-joined to the selected accounts, so it is correct even when {@code accountIds} is empty.
      */
-    public BalanceSnapshot snapshotBalances(List<Long> accountIds) {
+    public BalanceSnapshot snapshotBalances(List<Long> accountIds, Currency currency) {
         var all = ACCOUNT.as("all_accounts");
-        Field<BigDecimal> globalSum = DSL.field(DSL.select(DSL.sum(all.BALANCE_MINOR)).from(all)).as("global_sum");
-        var rows = dsl.select(ACCOUNT.ID, ACCOUNT.BALANCE_MINOR, globalSum)
-                .from(ACCOUNT)
-                .where(ACCOUNT.ID.in(accountIds))
+        var total = dsl.select(DSL.coalesce(DSL.sum(all.BALANCE_MINOR), BigDecimal.ZERO).as("currency_sum"))
+                .from(all)
+                .where(all.CURRENCY.eq(currency.name()))
+                .asTable("total");
+        Field<BigDecimal> currencySum = total.field("currency_sum", BigDecimal.class);
+        var rows = dsl.select(currencySum, ACCOUNT.ID, ACCOUNT.BALANCE_MINOR)
+                .from(total)
+                .leftJoin(ACCOUNT).on(ACCOUNT.ID.in(accountIds))
                 .orderBy(ACCOUNT.ID)
                 .fetch();
         Map<Long, Long> balances = new LinkedHashMap<>();
-        rows.forEach(r -> balances.put(r.get(ACCOUNT.ID), r.get(ACCOUNT.BALANCE_MINOR)));
-        long global = rows.isEmpty() ? 0 : rows.get(0).get(globalSum).longValueExact();
-        return new BalanceSnapshot(balances, global);
+        rows.forEach(r -> {
+            if (r.get(ACCOUNT.ID) != null) {
+                balances.put(r.get(ACCOUNT.ID), r.get(ACCOUNT.BALANCE_MINOR));
+            }
+        });
+        return new BalanceSnapshot(balances, rows.get(0).get(currencySum).longValueExact());
     }
 
     // ---- reconciliation ----

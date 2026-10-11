@@ -10,6 +10,7 @@ import com.ardakeles.ledger.domain.TransferRequest;
 import com.ardakeles.ledger.domain.TransferResult;
 import com.ardakeles.ledger.repository.LedgerRepository;
 import java.security.MessageDigest;
+import java.time.Duration;
 import java.util.Optional;
 import org.springframework.stereotype.Component;
 
@@ -26,6 +27,20 @@ class TransferPosting {
 
     TransferPosting(LedgerRepository repository) {
         this.repository = repository;
+    }
+
+    /**
+     * Validates {@code ledger.lock-timeout}. Zero is rejected on purpose: in Postgres it means "wait forever",
+     * which is exactly what the setting exists to prevent.
+     */
+    static Duration requireValidLockTimeout(Duration lockTimeout) {
+        // Postgres takes whole milliseconds, so anything under 1ms would round down to 0 (= no limit).
+        if (lockTimeout == null || lockTimeout.isNegative() || lockTimeout.toMillis() < 1
+                || lockTimeout.compareTo(Duration.ofMillis(Integer.MAX_VALUE)) > 0) {
+            throw new IllegalArgumentException("ledger.lock-timeout must be between 1ms and "
+                    + Integer.MAX_VALUE + "ms, was " + lockTimeout);
+        }
+        return lockTimeout;
     }
 
     /**

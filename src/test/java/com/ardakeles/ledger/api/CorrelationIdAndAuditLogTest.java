@@ -111,6 +111,16 @@ class CorrelationIdAndAuditLogTest {
         assertThat(rejected.getMDCPropertyMap()).containsEntry("requestId", "rej-1");
     }
 
+    @Test
+    void aMalformedRequestIsAuditedWithItsCode() throws Exception {
+        events.list.clear();
+        mvc.perform(transfer(1, 2, 10, "has space").header("X-Request-Id", "bad-key-1")).andExpect(status().isBadRequest());
+
+        ILoggingEvent rejected = only("request.rejected");
+        assertThat(fields(rejected)).containsEntry("code", "INVALID_REQUEST").containsEntry("status", 400);
+        assertThat(rejected.getMDCPropertyMap()).containsEntry("requestId", "bad-key-1");
+    }
+
     // ---- helpers ----
 
     private ILoggingEvent only(String message) {

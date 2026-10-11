@@ -47,8 +47,10 @@ docker compose up -d db                                   # just the database, o
 ./mvnw verify -Pbenchmark                                 # the contention benchmark (about 6 minutes)
 ```
 
-The `demo` profile exposes `/demo` and the switch that makes the ledger deadlock on purpose. Without it, that code
-path is not reachable at all (a test asserts `/demo` and the switch are 404). Add `json` to the profiles
+The `demo` profile exposes `/demo` and the switch that makes the demo's transfers deadlock on purpose. The switch
+lives on the demo's own `TransferService` instance; the one behind `/transfers` has no switch, so even with the demo on,
+API traffic always locks in order (a test hammers the API with opposite transfers while the demo is unsafe and requires
+zero failures). Without the profile, `/demo` and the switch are 404 and no switch object exists at all. Add `json` to the profiles
 (`demo,json`) for structured JSON logs.
 
 ---
@@ -205,8 +207,8 @@ holding a higher id while waiting for a lower one, which cannot happen if everyo
   (the later `UPDATE`s became the lock order) *and* 306 raw constraint violations (stale funds checks). The lock phase has
   to come first.
 
-The deadlock is also available **on purpose**: with `ledger.demo.enabled=true`, a runtime switch takes locks in request
-order. The ledger stays correct even then, because a killed transaction rolls back completely: money is never
+The deadlock is also available **on purpose**: with `ledger.demo.enabled=true`, a runtime switch makes the demo's own
+`TransferService` instance take locks in request order (the API's instance has no switch). The ledger stays correct even then, because a killed transaction rolls back completely: money is never
 created or destroyed, and the transfer simply fails. Ordering buys *liveness*, not correctness.
 
 ### An optimistic variant, and why it is not the default
@@ -334,18 +336,24 @@ curl -s -X POST localhost:8080/transfers \
   -d '{"fromAccountId":2,"toAccountId":3,"amountMinor":1250,"currency":"USD"}'
 ```
 
-Amounts are JSON integers in minor units (`1250` is 12.50). Every response carries an `X-Request-Id`, taken from the
-request if it is 1 to 64 characters of `[A-Za-z0-9._-]` and generated otherwise.
+Amounts are JSON integers in minor units (`1250` is 12.50). The `Idempotency-Key` must be 1 to 255 characters of
+`[A-Za-z0-9._:-]` (UUIDs and ULIDs fit); anything else is a `400`, because the key is written to the audit log. Every
+response carries an `X-Request-Id`, taken from the request if it is 1 to 64 characters of `[A-Za-z0-9._-]` and
+generated otherwise.
 
 | Status | `code` | Meaning |
 |---|---|---|
-| 400 | | Malformed request: bad JSON, missing or unknown field, wrong type, missing `Idempotency-Key`, bad paging |
+| 400 | `INVALID_REQUEST` | Malformed request: bad JSON, missing or unknown field, wrong type, missing or malformed `Idempotency-Key`, bad paging |
 | 404 | `ACCOUNT_NOT_FOUND` | An account does not exist |
 | 422 | `INSUFFICIENT_FUNDS` | The source account cannot cover the amount (the balance is deliberately not revealed) |
 | 422 | `CURRENCY_MISMATCH` | The request and both accounts must share one currency |
 | 422 | `INVALID_TRANSFER` | Amount not positive, or source equals destination |
 | 422 | `IDEMPOTENCY_KEY_REUSED` | The key was already used with a different body |
-| 503 | `CONTENTION`, `TRANSIENT_FAILURE` | Nothing was posted; retry with the **same** key (`Retry-After: 1`) |
+| 503 | `CONTENTION`, `TRANSIENT_FAILURE` | Nothing was posted; retry with the **same** key (`Retry-After: 1`). `TRANSIENT_FAILURE` covers deadlock victims and lock waits that hit `ledger.lock-timeout`. |
+
+Every error body has a `code`; other statuses Spring produces itself (an unknown route, a wrong method) are named after
+the status, such as `NOT_FOUND` or `METHOD_NOT_ALLOWED`. A `500` carries `INTERNAL_ERROR` and is logged as an error, not
+audited as a rejection.
 
 System accounts (which may go negative, and are how money enters the system) cannot be created through the API. The demo
 creates its own at startup.
@@ -358,8 +366,8 @@ creates its own at startup.
 |---|---|---|
 | `ledger.locking.strategy` | `pessimistic` | `pessimistic` or `optimistic`: which `TransferService` the API uses. |
 | `ledger.optimistic.max-attempts` | `20` | Retry budget of the optimistic strategy. |
-| `ledger.locking.ordered` | `true` | Setting `false` takes locks in request order: **deadlocks on purpose**. A warning is logged. |
-| `ledger.demo.enabled` | `false` | Exposes `/demo` and the switch above. Turned on by the `demo` profile. Never for production. |
+| `ledger.lock-timeout` | `PT5S` | Longest a transfer waits for a row lock (`SET LOCAL lock_timeout`, both strategies). On expiry the transfer rolls back and the client gets a retryable `503`. Must be at least 1ms; there is no "wait forever" setting. |
+| `ledger.demo.enabled` | `false` | Exposes `/demo` and its unsafe-locking switch (which affects only the demo's own transfers). Turned on by the `demo` profile. Never for production. |
 | `ledger.reconciliation.enabled` / `.interval` / `.initial-delay` | `true` / `PT5M` / `PT1M` | The reconciliation schedule (ISO-8601 durations). |
 | `logging.structured.format.console` | off | `ecs` for JSON logs; the `json` profile sets it. |
 
@@ -383,10 +391,12 @@ This is a correctness core, not a product. Honest edges:
 - **The database constraints protect against application bugs and other services, not against the table owner.** A
   superuser can disable a trigger. The real defence is least-privilege database roles (the app role needs `INSERT` and
   `SELECT` on `entry`, nothing more). The reconciliation job's transfer check exists to catch exactly that.
-- **No `lock_timeout`.** A stuck lock holder blocks others indefinitely. I deferred choosing a value because it needs
-  production latency data.
+- **The lock timeout is a guess, not a measurement.** `ledger.lock-timeout` defaults to 5s: far above a normal lock wait
+  (milliseconds), well below typical client timeouts. The right value needs production latency data. There is no
+  `statement_timeout` yet either.
 - **Reconciliation scans the whole `entry` table.** Fine here; at scale it would run incrementally from a watermark with
-  the full scan as a periodic audit.
+  the full scan as a periodic audit. The scan also runs in one `REPEATABLE READ` snapshot, which holds back vacuum's
+  cleanup horizon for as long as it runs, one more reason to keep it short at scale.
 - **Statement pagination can miss a late-committing entry.** Ids come from a sequence but commit in arbitrary order, so a
   slow transaction can commit a lower id after a reader paged past it.
 - **JavaScript clients lose integer precision above 2^53.** Irrelevant for realistic amounts, but real.

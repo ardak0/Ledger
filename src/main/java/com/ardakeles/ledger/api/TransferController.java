@@ -8,6 +8,7 @@ import com.ardakeles.ledger.service.TransferService;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotNull;
 import java.time.OffsetDateTime;
+import java.util.regex.Pattern;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
@@ -29,6 +30,14 @@ class TransferController {
 
     /** Matches the CHECK on transfer.idempotency_key in the V1 migration. */
     static final int MAX_KEY_LENGTH = 255;
+
+    /**
+     * The key is written to the audit log and echoed in responses, so, like {@code X-Request-Id} (see
+     * {@link CorrelationIdFilter}), it is limited to characters that cannot forge log fields or smuggle control
+     * characters. UUIDs, ULIDs and keys like {@code pay-2026-0001} or {@code order:42} all fit. Unlike the
+     * request id, a bad key is rejected rather than replaced: replacing it would silently break idempotency.
+     */
+    static final Pattern SAFE_KEY = Pattern.compile("[A-Za-z0-9._:-]{1," + MAX_KEY_LENGTH + "}");
 
     private final TransferService transfers;
 
@@ -60,9 +69,9 @@ class TransferController {
     @PostMapping("/transfers")
     ResponseEntity<TransferResponse> create(@RequestHeader("Idempotency-Key") String idempotencyKey,
                                             @Valid @RequestBody TransferHttpRequest request) {
-        if (idempotencyKey.isBlank() || idempotencyKey.length() > MAX_KEY_LENGTH) {
-            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
-                    "Idempotency-Key must be 1-" + MAX_KEY_LENGTH + " non-blank characters");
+        if (!SAFE_KEY.matcher(idempotencyKey).matches()) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Idempotency-Key must be 1-" + MAX_KEY_LENGTH
+                    + " characters from A-Z, a-z, 0-9 and . _ : -");
         }
         TransferResult result = transfers.execute(idempotencyKey, request.toDomain());
         TransferResponse body = TransferResponse.from(result.transfer());

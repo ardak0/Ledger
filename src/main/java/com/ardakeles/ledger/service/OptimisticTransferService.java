@@ -9,6 +9,7 @@ import com.ardakeles.ledger.domain.TransferResult;
 import com.ardakeles.ledger.repository.LedgerRepository;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
+import java.time.Duration;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Optional;
@@ -64,6 +65,7 @@ public class OptimisticTransferService implements TransferService {
     private final TransferPosting posting;
     private final TransactionTemplate tx;
     private final int maxAttempts;
+    private final Duration lockTimeout;
     private final Counter conflicts;
     private final Counter exhausted;
 
@@ -76,13 +78,15 @@ public class OptimisticTransferService implements TransferService {
 
     public OptimisticTransferService(LedgerRepository repository, TransferPosting posting,
                                      PlatformTransactionManager transactionManager, MeterRegistry meters,
-                                     @Value("${ledger.optimistic.max-attempts:20}") int maxAttempts) {
+                                     @Value("${ledger.optimistic.max-attempts:20}") int maxAttempts,
+                                     @Value("${ledger.lock-timeout:PT5S}") Duration lockTimeout) {
         if (maxAttempts < 1) {
             throw new IllegalArgumentException("ledger.optimistic.max-attempts must be >= 1");
         }
         this.repository = repository;
         this.posting = posting;
         this.maxAttempts = maxAttempts;
+        this.lockTimeout = TransferPosting.requireValidLockTimeout(lockTimeout);
         this.tx = new TransactionTemplate(transactionManager);
         this.tx.setIsolationLevel(TransactionDefinition.ISOLATION_READ_COMMITTED);
         this.conflicts = Counter.builder("ledger.transfer.conflicts")
@@ -108,6 +112,8 @@ public class OptimisticTransferService implements TransferService {
     }
 
     private TransferResult attemptOnce(String idempotencyKey, TransferRequest request) {
+        // The version-checked UPDATEs (and a duplicate key's INSERT) still wait on row locks; bound that wait.
+        repository.setLocalLockTimeout(lockTimeout);
         Optional<Transfer> claimed = posting.claim(idempotencyKey, request);
         if (claimed.isEmpty()) {
             return posting.replay(idempotencyKey, request);

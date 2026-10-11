@@ -31,6 +31,11 @@ import org.springframework.web.servlet.mvc.method.annotation.ResponseEntityExcep
  *   <li>422 -- well-formed, but violates a ledger rule; carries a stable {@code code} for clients</li>
  *   <li>500 -- anything unexpected: generic body, details only in the server log</li>
  * </ul>
+ *
+ * <p>Every error body carries a {@code code}, including the ones Spring's base class produces (malformed
+ * JSON, missing header, bad parameter, unknown route): see {@link #handleExceptionInternal}. Every 4xx and
+ * retryable 503 leaves one {@code request.rejected} audit line; an unexpected 500 is logged as an error
+ * instead, since it is a server fault, not a rejected request.
  */
 @RestControllerAdvice
 class ApiExceptionHandler extends ResponseEntityExceptionHandler {
@@ -88,7 +93,7 @@ class ApiExceptionHandler extends ResponseEntityExceptionHandler {
     @ExceptionHandler(Exception.class)
     ProblemDetail unexpected(Exception e) {
         log.error("Unhandled exception", e);
-        return problem(HttpStatus.INTERNAL_SERVER_ERROR, "INTERNAL_ERROR", "Internal error",
+        return body(HttpStatus.INTERNAL_SERVER_ERROR, "INTERNAL_ERROR", "Internal error",
                 "An unexpected error occurred.");
     }
 
@@ -104,14 +109,54 @@ class ApiExceptionHandler extends ResponseEntityExceptionHandler {
         return handleExceptionInternal(ex, body, headers, status, request);
     }
 
+    /**
+     * Every exception Spring's base class handles (malformed or unknown JSON, a missing header, a bad query
+     * parameter, a {@code ResponseStatusException} from a controller, an unknown route...) ends here. Those
+     * bodies have no {@code code} of their own, so one is added, and a 4xx is audited like any other rejection.
+     */
+    @Override
+    protected ResponseEntity<Object> handleExceptionInternal(Exception ex, Object body, HttpHeaders headers,
+                                                             HttpStatusCode statusCode, WebRequest request) {
+        // The body is often still null here (e.g. for a ResponseStatusException): super builds the ProblemDetail,
+        // so decorate what it returns rather than what was passed in.
+        ResponseEntity<Object> response = super.handleExceptionInternal(ex, body, headers, statusCode, request);
+        if (response != null && response.getBody() instanceof ProblemDetail pd
+                && (pd.getProperties() == null || !pd.getProperties().containsKey("code"))) {
+            String code = codeFor(response.getStatusCode());
+            pd.setProperty("code", code);
+            if (response.getStatusCode().is4xxClientError()) {
+                auditRejection(code, response.getStatusCode().value());
+            }
+        }
+        return response;
+    }
+
+    /** 400 is the common case and gets a descriptive code; anything else is named after its status. */
+    static String codeFor(HttpStatusCode statusCode) {
+        if (statusCode.value() == HttpStatus.BAD_REQUEST.value()) {
+            return "INVALID_REQUEST";
+        }
+        HttpStatus known = HttpStatus.resolve(statusCode.value());
+        return known != null ? known.name() : "HTTP_" + statusCode.value();
+    }
+
     private static ResponseEntity<ProblemDetail> retryable(String code, String title, String detail) {
         return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE).header(HttpHeaders.RETRY_AFTER, "1")
                 .body(problem(HttpStatus.SERVICE_UNAVAILABLE, code, title, detail));
     }
 
+    /** A rejected request: audited, then turned into a problem body. */
     private static ProblemDetail problem(HttpStatus status, String code, String title, String detail) {
-        // Every business rejection leaves one audit line carrying the stable error code (the request id comes from the MDC).
-        audit.atInfo().setMessage("request.rejected").addKeyValue("code", code).addKeyValue("status", status.value()).log();
+        auditRejection(code, status.value());
+        return body(status, code, title, detail);
+    }
+
+    /** Every rejection leaves one audit line carrying the stable error code (the request id comes from the MDC). */
+    private static void auditRejection(String code, int status) {
+        audit.atInfo().setMessage("request.rejected").addKeyValue("code", code).addKeyValue("status", status).log();
+    }
+
+    private static ProblemDetail body(HttpStatus status, String code, String title, String detail) {
         ProblemDetail problem = ProblemDetail.forStatusAndDetail(status, detail);
         problem.setTitle(title);
         problem.setProperty("code", code);

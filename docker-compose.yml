@@ -3,9 +3,9 @@
 #   db only (run the app from your IDE / `./mvnw spring-boot:run`):   docker compose up -d db
 #   db + app with the live demo at http://localhost:8080/demo:         ./mvnw -DskipTests package && docker compose up --build
 #
-# The app service enables the `demo` profile, which exposes /demo and a switch that makes the ledger deadlock
-# ON PURPOSE. That is right for a local demo and wrong anywhere else: remove SPRING_PROFILES_ACTIVE for a
-# production-like run.
+# The app service enables the `demo` profile, which exposes /demo and a switch that makes the demo's own transfers
+# deadlock ON PURPOSE (the /transfers API is never affected). That is right for a local demo and wrong anywhere else:
+# remove SPRING_PROFILES_ACTIVE for a production-like run.
 services:
   db:
     image: postgres:17-alpine
