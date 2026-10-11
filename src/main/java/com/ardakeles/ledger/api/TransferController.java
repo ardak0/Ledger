@@ -8,6 +8,8 @@ import com.ardakeles.ledger.service.TransferService;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotNull;
 import java.time.OffsetDateTime;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -18,6 +20,12 @@ import org.springframework.web.server.ResponseStatusException;
 
 @RestController
 class TransferController {
+
+    /**
+     * Money-movement events go to a dedicated logger so they can be routed, retained or silenced separately
+     * from application logs. Logged here, at the API boundary, where the request id is in the logging context.
+     */
+    private static final Logger audit = LoggerFactory.getLogger("ledger.audit");
 
     /** Matches the CHECK on transfer.idempotency_key in the V1 migration. */
     static final int MAX_KEY_LENGTH = 255;
@@ -58,6 +66,16 @@ class TransferController {
         }
         TransferResult result = transfers.execute(idempotencyKey, request.toDomain());
         TransferResponse body = TransferResponse.from(result.transfer());
+        TransferRequest posted = result.transfer().request();
+        audit.atInfo().setMessage("transfer.posted")
+                .addKeyValue("transferId", result.transfer().id())
+                .addKeyValue("idempotencyKey", idempotencyKey)
+                .addKeyValue("fromAccountId", posted.fromAccountId())
+                .addKeyValue("toAccountId", posted.toAccountId())
+                .addKeyValue("amountMinor", posted.amountMinor())
+                .addKeyValue("currency", posted.currency())
+                .addKeyValue("replayed", result.replayed())
+                .log();
         if (result.replayed()) {
             // 200, not 201: nothing was created. The header lets a client tell a replay from a first run.
             return ResponseEntity.ok().header("Idempotent-Replayed", "true").body(body);

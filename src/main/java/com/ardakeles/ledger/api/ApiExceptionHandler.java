@@ -36,6 +36,7 @@ import org.springframework.web.servlet.mvc.method.annotation.ResponseEntityExcep
 class ApiExceptionHandler extends ResponseEntityExceptionHandler {
 
     private static final Logger log = LoggerFactory.getLogger(ApiExceptionHandler.class);
+    private static final Logger audit = LoggerFactory.getLogger("ledger.audit");
 
     @ExceptionHandler(AccountNotFoundException.class)
     ProblemDetail accountNotFound(AccountNotFoundException e) {
@@ -109,6 +110,8 @@ class ApiExceptionHandler extends ResponseEntityExceptionHandler {
     }
 
     private static ProblemDetail problem(HttpStatus status, String code, String title, String detail) {
+        // Every business rejection leaves one audit line carrying the stable error code (the request id comes from the MDC).
+        audit.atInfo().setMessage("request.rejected").addKeyValue("code", code).addKeyValue("status", status.value()).log();
         ProblemDetail problem = ProblemDetail.forStatusAndDetail(status, detail);
         problem.setTitle(title);
         problem.setProperty("code", code);

@@ -1,0 +1,10 @@
+# Activate with --spring.profiles.active=json (combine: demo,json), or set the single environment variable
+# LOGGING_STRUCTURED_FORMAT_CONSOLE=ecs. One JSON object per line, with the request id and the key/value
+# fields of audit and reconciliation events as top-level members. Off by default so local output stays readable.
+logging:
+  structured:
+    format:
+      console: ecs
+    ecs:
+      service:
+        name: ledger

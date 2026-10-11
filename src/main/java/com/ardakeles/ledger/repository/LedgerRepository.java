@@ -5,6 +5,10 @@ import static com.ardakeles.ledger.jooq.Tables.ENTRY;
 import static com.ardakeles.ledger.jooq.Tables.TRANSFER;
 
 import com.ardakeles.ledger.domain.Account;
+import com.ardakeles.ledger.domain.AccountDrift;
+import com.ardakeles.ledger.domain.BrokenTransfer;
+import com.ardakeles.ledger.domain.Capped;
+import com.ardakeles.ledger.domain.LedgerCounts;
 import com.ardakeles.ledger.domain.BalanceSnapshot;
 import com.ardakeles.ledger.domain.Currency;
 import com.ardakeles.ledger.domain.LedgerEntry;
@@ -175,6 +179,69 @@ public class LedgerRepository {
         rows.forEach(r -> balances.put(r.get(ACCOUNT.ID), r.get(ACCOUNT.BALANCE_MINOR)));
         long global = rows.isEmpty() ? 0 : rows.get(0).get(globalSum).longValueExact();
         return new BalanceSnapshot(balances, global);
+    }
+
+    // ---- reconciliation ----
+    // These queries are hand-written SQL on purpose: they are analytic (outer join, aggregate, window) and
+    // the SQL itself is what a reviewer should read to judge them, so it is not hidden behind the DSL.
+
+    /**
+     * Accounts whose cached balance differs from the sum of their entries, in ONE statement and therefore
+     * one snapshot: a transfer (entries + both balance updates commit together) is either fully visible
+     * or not at all, so a concurrent transfer cannot look like drift. {@code sum()} over BIGINT is NUMERIC
+     * in Postgres, so the comparison cannot overflow. Accounts with no entries compare against 0.
+     */
+    public Capped<AccountDrift> findDriftedAccounts(int limit) {
+        var rows = dsl.resultQuery("""
+                SELECT a.id, a.balance_minor, COALESCE(s.total, 0) AS computed, count(*) OVER () AS total_rows
+                  FROM account a
+                  LEFT JOIN (SELECT account_id, sum(amount_minor) AS total FROM entry GROUP BY account_id) s
+                    ON s.account_id = a.id
+                 WHERE a.balance_minor <> COALESCE(s.total, 0)
+                 ORDER BY a.id
+                 LIMIT ?
+                """, limit).fetch();
+        List<AccountDrift> items = rows.map(r -> new AccountDrift(r.get("id", Long.class),
+                r.get("balance_minor", Long.class), r.get("computed", BigDecimal.class).longValueExact()));
+        return new Capped<>(rows.isEmpty() ? 0 : rows.get(0).get("total_rows", Long.class), items);
+    }
+
+    /**
+     * Transfers breaking the double-entry rule: fewer than 2 distinct accounts, not exactly one currency,
+     * or entries not summing to zero. A LEFT JOIN, so a transfer with no entries at all is found too.
+     * This is the deferred trigger's invariant re-checked from outside, in case the trigger was bypassed.
+     */
+    public Capped<BrokenTransfer> findBrokenTransfers(int limit) {
+        var rows = dsl.resultQuery("""
+                SELECT t.id, COALESCE(sum(e.amount_minor), 0) AS total,
+                       count(DISTINCT e.account_id) AS accounts, count(DISTINCT e.currency) AS currencies,
+                       count(*) OVER () AS total_rows
+                  FROM transfer t
+                  LEFT JOIN entry e ON e.transfer_id = t.id
+                 GROUP BY t.id
+                HAVING COALESCE(sum(e.amount_minor), 0) <> 0
+                    OR count(DISTINCT e.account_id) < 2
+                    OR count(DISTINCT e.currency) <> 1
+                 ORDER BY t.id
+                 LIMIT ?
+                """, limit).fetch();
+        List<BrokenTransfer> items = rows.map(r -> new BrokenTransfer(r.get("id", Long.class),
+                r.get("total", BigDecimal.class).longValueExact(), r.get("accounts", Long.class), r.get("currencies", Long.class)));
+        return new Capped<>(rows.isEmpty() ? 0 : rows.get(0).get("total_rows", Long.class), items);
+    }
+
+    public LedgerCounts countRows() {
+        var r = dsl.fetchSingle("SELECT (SELECT count(*) FROM account) AS accounts, (SELECT count(*) FROM transfer) AS transfers,"
+                + " (SELECT count(*) FROM entry) AS entries");
+        return new LedgerCounts(r.get("accounts", Long.class), r.get("transfers", Long.class), r.get("entries", Long.class));
+    }
+
+    /**
+     * Tries to take a Postgres advisory lock held until the end of the current transaction (so it can never
+     * be left behind by a crash). False means another transaction, possibly on another instance, holds it.
+     */
+    public boolean tryAcquireTransactionLock(String name) {
+        return Boolean.TRUE.equals(dsl.fetchSingle("SELECT pg_try_advisory_xact_lock(hashtext(?))", name).get(0, Boolean.class));
     }
 
     private static Account toAccount(AccountRecord r) {

@@ -28,3 +28,9 @@ management:
   endpoint:
     health:
       show-details: never   # status only; never leak infrastructure details
+
+ledger:
+  reconciliation:
+    enabled: true
+    initial-delay: PT1M     # ISO-8601 durations
+    interval: PT5M          # delay between the END of one run and the start of the next
