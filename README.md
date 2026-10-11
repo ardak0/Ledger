@@ -290,7 +290,7 @@ Full method, tables, caveats and what the numbers do *not* show: [`docs/BENCHMAR
 
 ## How it is tested
 
-The suite is 90 tests against a real PostgreSQL started by Testcontainers. Highlights:
+The suite is 97 tests against a real PostgreSQL started by Testcontainers. Highlights:
 
 - **Constraints, without the application.** Raw SQL tries to write unbalanced, mixed-currency, empty, overdrawn and
   tampered data and must be refused.
@@ -303,7 +303,12 @@ The suite is 90 tests against a real PostgreSQL started by Testcontainers. Highl
 - **A negative control.** The same harness with ordering turned off *must* produce deadlocks (proving "zero deadlocks"
   elsewhere means something) and the ledger must still be consistent afterwards.
 - **The demo's claims, over real HTTP:** the total is identical in every sampled snapshot while balances change; safe mode
-  never deadlocks; unsafe does; a mid-run flip works.
+  never deadlocks; unsafe does; a mid-run flip works. And the unsafe switch reaches *only* the demo: with it on, 16
+  threads of opposite transfers through the API's own service must all succeed.
+- **A stuck lock.** Another connection holds an account's row lock and never lets go; a transfer must give up after
+  `ledger.lock-timeout`, roll back completely without burning its idempotency key, and reach the client as a retryable
+  `503`, for both strategies. The test runs the call on a worker thread with a bounded wait, because a regression would
+  otherwise hang the build (JUnit's timeout cannot interrupt a thread blocked in a JDBC socket read) instead of failing it.
 - **Reconciliation:** finds deliberately corrupted balances (exact differences, both directions), finds transfers written
   with the trigger bypassed, and reports clean on every pass while 20 threads move money.
 
@@ -311,12 +316,16 @@ The suite is 90 tests against a real PostgreSQL started by Testcontainers. Highl
 confirmed the right test failed: removing the entry-side trigger; unsorted lock order; removing `FOR UPDATE`;
 check-then-insert instead of `ON CONFLICT`; skipping the request-hash comparison; ignoring the version check; unsorted
 optimistic writes; a two-query `READ COMMITTED` reconciliation; loosening the JSON parser; removing `@EnableScheduling`;
-not clearing the logging context. These were manual experiments, not an automated mutation-testing run.
+not clearing the logging context; letting the API's service lock out of order; dropping the lock timeout. These were
+manual experiments, not an automated mutation-testing run.
 
 Two infrastructure lessons are worth recording. A first benchmark run silently executed **zero** tests because the class
 name did not match Surefire's patterns. And a shared test container was stopped by Spring whenever any one context
-closed, which made the suite order-dependent: it now starts once, owned by no context, and the reconciliation tests get
-their own database. The suite is checked in both default and reversed order.
+closed, which made the suite order-dependent: it now starts once, owned by no context. Tests that assert something about
+the whole database (reconciliation, and the demo's "everything sums to zero") get their own database, because the raw-SQL
+schema tests legitimately leave unbalanced rows behind. I first claimed order-independence after trying the default and the
+reversed order, but neither ran the demo tests *after* the schema tests; a code review caught it. The suite now passes in
+alphabetical order too, which does.
 
 ---
 
