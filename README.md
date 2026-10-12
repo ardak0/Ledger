@@ -4,8 +4,7 @@
 
 # Ledger
 
-<!-- Replace YOUR_GITHUB_USERNAME with the GitHub account that owns this repository. -->
-[![CI](https://github.com/YOUR_GITHUB_USERNAME/Ledger/actions/workflows/ci.yml/badge.svg)](https://github.com/YOUR_GITHUB_USERNAME/Ledger/actions/workflows/ci.yml)
+[![CI](https://github.com/ardak0/Ledger/actions/workflows/ci.yml/badge.svg)](https://github.com/ardak0/Ledger/actions/workflows/ci.yml)
 ![Java 21](https://img.shields.io/badge/Java-21-informational)
 ![Spring Boot 3.5](https://img.shields.io/badge/Spring%20Boot-3.5-informational)
 ![PostgreSQL 17](https://img.shields.io/badge/PostgreSQL-17-informational)
@@ -17,7 +16,7 @@ the same instant must not lose, or invent, a single penny. This project is that 
 **double-entry ledger on PostgreSQL**. It is not a bank; it is the correctness core that sits underneath one.
 
 The demo above fires hundreds of simultaneous transfers while the total across the accounts stays frozen. One switch
-reintroduces a classic concurrency bug *on purpose*, so you can watch transfers die from deadlocks in real time while
+reintroduces a classic concurrency bug _on purpose_, so you can watch transfers die from deadlocks in real time while
 the money still never goes missing, and flip it back to see them stop.
 
 **Contents:** [Try it](#try-it) · [What it guarantees](#what-it-guarantees) · [Architecture](#architecture) ·
@@ -29,7 +28,7 @@ the money still never goes missing, and flip it back to see them stop.
 
 ## Try it
 
-You need JDK 21 and Docker. (Docker is needed to *build*, not just to run: see [why](#build-time-code-generation).)
+You need JDK 21 and Docker. (Docker is needed to _build_, not just to run: see [why](#build-time-code-generation).)
 
 ```bash
 ./mvnw -DskipTests package && docker compose up --build
@@ -57,15 +56,15 @@ zero failures). Without the profile, `/demo` and the switch are 404 and no switc
 
 ## What it guarantees
 
-| Guarantee | How | Where it is proved |
-|---|---|---|
-| **No money is created or destroyed.** Every transfer is two or more entries in one currency that sum to zero. | Deferred constraint triggers *in the database*, on both `entry` and `transfer`. | [`SchemaConstraintsTest`](src/test/java/com/ardakeles/ledger/SchemaConstraintsTest.java): raw SQL that bypasses all application code. |
-| **The cached balance always equals the sum of entries.** Entries are the source of truth. | A reconciliation job recomputes every balance from the entries, in one snapshot. | [`ReconciliationTest`](src/test/java/com/ardakeles/ledger/reconciliation/ReconciliationTest.java), and every report is clean under live load. |
-| **No overdraft.** | The funds check runs on a row-locked, current balance; a `CHECK` constraint is the backstop. | The scarce-funds run: every rejection is a clean `INSUFFICIENT_FUNDS`, never a constraint error. |
-| **A retried request never posts twice.** | The idempotency key is claimed first with `INSERT ... ON CONFLICT DO NOTHING`. | [`IdempotencyContract`](src/test/java/com/ardakeles/ledger/service/IdempotencyContract.java), including concurrent duplicates. |
-| **Concurrent transfers neither deadlock nor lose updates.** | Row locks taken in ascending account id order. | 10,000 transfers on 20 threads; plus a negative control that must deadlock. |
-| **A failure leaves nothing behind.** | One transaction per transfer; a victim rolls back completely. | Every load test asserts exactly the reported transfers exist, each with two entries. |
-| **Input cannot smuggle in money.** | Strict JSON (no float-to-int, no string coercion, no unknown fields); system accounts are unreachable from the API. | [`ApiTest`](src/test/java/com/ardakeles/ledger/api/ApiTest.java). |
+| Guarantee                                                                                                     | How                                                                                                                 | Where it is proved                                                                                                                            |
+| ------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| **No money is created or destroyed.** Every transfer is two or more entries in one currency that sum to zero. | Deferred constraint triggers _in the database_, on both `entry` and `transfer`.                                     | [`SchemaConstraintsTest`](src/test/java/com/ardakeles/ledger/SchemaConstraintsTest.java): raw SQL that bypasses all application code.         |
+| **The cached balance always equals the sum of entries.** Entries are the source of truth.                     | A reconciliation job recomputes every balance from the entries, in one snapshot.                                    | [`ReconciliationTest`](src/test/java/com/ardakeles/ledger/reconciliation/ReconciliationTest.java), and every report is clean under live load. |
+| **No overdraft.**                                                                                             | The funds check runs on a row-locked, current balance; a `CHECK` constraint is the backstop.                        | The scarce-funds run: every rejection is a clean `INSUFFICIENT_FUNDS`, never a constraint error.                                              |
+| **A retried request never posts twice.**                                                                      | The idempotency key is claimed first with `INSERT ... ON CONFLICT DO NOTHING`.                                      | [`IdempotencyContract`](src/test/java/com/ardakeles/ledger/service/IdempotencyContract.java), including concurrent duplicates.                |
+| **Concurrent transfers neither deadlock nor lose updates.**                                                   | Row locks taken in ascending account id order.                                                                      | 10,000 transfers on 20 threads; plus a negative control that must deadlock.                                                                   |
+| **A failure leaves nothing behind.**                                                                          | One transaction per transfer; a victim rolls back completely.                                                       | Every load test asserts exactly the reported transfers exist, each with two entries.                                                          |
+| **Input cannot smuggle in money.**                                                                            | Strict JSON (no float-to-int, no string coercion, no unknown fields); system accounts are unreachable from the API. | [`ApiTest`](src/test/java/com/ardakeles/ledger/api/ApiTest.java).                                                                             |
 
 ---
 
@@ -169,23 +168,23 @@ caveat). Two details are easy to get wrong:
 - **Deferred**, because entries are inserted one at a time. An immediate trigger would fire after the first insert, see
   a lone non-zero entry, and reject every valid transfer. Deferring runs the check at `COMMIT`, when all entries exist.
 - **Attached to both `entry` and `transfer`.** A row trigger cannot fire on rows that do not exist: a transfer written
-  with *no* entries would never fire an entry-only trigger. Conversely, a stray entry appended to an already-committed
+  with _no_ entries would never fire an entry-only trigger. Conversely, a stray entry appended to an already-committed
   transfer never fires a transfer-only trigger. Each covers the other's blind spot. (I confirmed this by removing the
   entry-side trigger: exactly the stray-entry test failed.)
 
 ### Idempotency
 
 The client sends an `Idempotency-Key`. Same key and same payload returns the original with `200`; same key and a
-*different* payload is `422` (a client bug). The transfer row is inserted **first**, with `ON CONFLICT DO NOTHING`:
+_different_ payload is `422` (a client bug). The transfer row is inserted **first**, with `ON CONFLICT DO NOTHING`:
 
-| Approach | Verdict |
-|---|---|
-| Check for the key, then insert | **Rejected.** Racy: two concurrent requests both see "absent". This passes every sequential test and fails only under real concurrency (verified by mutation). |
-| Insert and catch the unique violation | **Rejected.** In Postgres a unique violation aborts the whole transaction, so the loser must roll back and re-read in a new one. |
-| **`INSERT ... ON CONFLICT DO NOTHING`, claim first** | **Chosen.** No error is raised, so the transaction stays usable. A concurrent duplicate *blocks* on the unique index until the owner finishes: if the owner commits, the duplicate replays; if it rolls back, the duplicate executes itself. A failed attempt does not burn the key. |
+| Approach                                             | Verdict                                                                                                                                                                                                                                                                              |
+| ---------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Check for the key, then insert                       | **Rejected.** Racy: two concurrent requests both see "absent". This passes every sequential test and fails only under real concurrency (verified by mutation).                                                                                                                       |
+| Insert and catch the unique violation                | **Rejected.** In Postgres a unique violation aborts the whole transaction, so the loser must roll back and re-read in a new one.                                                                                                                                                     |
+| **`INSERT ... ON CONFLICT DO NOTHING`, claim first** | **Chosen.** No error is raised, so the transaction stays usable. A concurrent duplicate _blocks_ on the unique index until the owner finishes: if the owner commits, the duplicate replays; if it rolls back, the duplicate executes itself. A failed attempt does not burn the key. |
 
 Claiming first also means a duplicate waits holding no account locks, so it can never be part of a deadlock cycle. The
-request hash is SHA-256 of the *parsed* fields, not the raw body, so whitespace or key order cannot cause a false `422`.
+request hash is SHA-256 of the _parsed_ fields, not the raw body, so whitespace or key order cannot cause a false `422`.
 
 ### Concurrency: ordered row locks
 
@@ -193,7 +192,7 @@ Two opposite transfers, A to B and B to A, deadlock if each locks its own source
 the other. The fix is a **total order**: always lock the lower account id first. A wait cycle would need a transaction
 holding a higher id while waiting for a lower one, which cannot happen if everyone acquires in the same order.
 
-- **Why `READ COMMITTED` plus row locks is enough.** `SELECT ... FOR UPDATE` returns the *latest committed* version of the
+- **Why `READ COMMITTED` plus row locks is enough.** `SELECT ... FOR UPDATE` returns the _latest committed_ version of the
   row once the lock is acquired, so after it returns the balance is current and cannot change until commit (every writer
   takes the same lock). That makes read-check-write atomic. The invariant is per-row (an account's balance must stay
   non-negative): the decision about account X reads only X and writes only X, and a credit only ever raises a balance. There
@@ -204,18 +203,18 @@ holding a higher id while waiting for a lower one, which cannot happen if everyo
 - **Locks are separate statements, not one `ORDER BY ... FOR UPDATE`.** The order is the one property this project is
   about; I did not want it to depend on how the planner executes a multi-row locking query.
 - **Ordering and the lock are separate protections.** With `FOR UPDATE` removed but ordering kept, 10 deadlocks appeared
-  (the later `UPDATE`s became the lock order) *and* 306 raw constraint violations (stale funds checks). The lock phase has
+  (the later `UPDATE`s became the lock order) _and_ 306 raw constraint violations (stale funds checks). The lock phase has
   to come first.
 
 The deadlock is also available **on purpose**: with `ledger.demo.enabled=true`, a runtime switch makes the demo's own
 `TransferService` instance take locks in request order (the API's instance has no switch). The ledger stays correct even then, because a killed transaction rolls back completely: money is never
-created or destroyed, and the transfer simply fails. Ordering buys *liveness*, not correctness.
+created or destroyed, and the transfer simply fails. Ordering buys _liveness_, not correctness.
 
 ### An optimistic variant, and why it is not the default
 
 `OptimisticTransferService` reads without locks, decides, then writes each balance with
 `UPDATE ... WHERE version = <what I read>`. Zero rows updated means someone changed the account, so the transaction
-rolls back and a retry loop *outside* the transaction starts over (full-jitter exponential backoff, a bounded budget of 20
+rolls back and a retry loop _outside_ the transaction starts over (full-jitter exponential backoff, a bounded budget of 20
 attempts, then a clean `503`). Two things worth knowing:
 
 - **Optimistic does not mean deadlock-free.** The version-checked `UPDATE`s take row locks in the order they run, so they
@@ -244,13 +243,13 @@ is strict: `{"amountMinor": 10.5}` and `{"amountMinor": "10"}` are rejected rath
 
 ### Stack choices
 
-- **jOOQ, not JPA/Hibernate.** This project is *about* SQL: `FOR UPDATE`, `ON CONFLICT`, deferred triggers, a
+- **jOOQ, not JPA/Hibernate.** This project is _about_ SQL: `FOR UPDATE`, `ON CONFLICT`, deferred triggers, a
   `REPEATABLE READ` snapshot. An ORM would hide those or fight them. jOOQ keeps the SQL visible and still type-checked.
 - **Real PostgreSQL in tests, never H2.** H2's locking and constraint-timing semantics differ (it has no deferred constraint
   triggers), so concurrency tests against it would prove nothing.
 - **Server-Sent Events for the demo.** One-way, plain HTTP, automatic reconnection, no library. The page is one HTML file
   with inline CSS and JS: no framework, no build step.
-- **Sampled snapshots, not per-transfer events.** The big "total" number must come from a *single SQL statement* so it is
+- **Sampled snapshots, not per-transfer events.** The big "total" number must come from a _single SQL statement_ so it is
   internally consistent. Summing a stream of per-transfer events in the browser would flicker.
 
 #### Build-time code generation
@@ -269,13 +268,13 @@ Median throughput (transfers/second) over 5 repetitions, 20 threads and 20 conne
 PostgreSQL 17 (`fsync=on`) in Docker on an Apple M3. Same workload for both strategies; every measured run was verified
 for conservation.
 
-| Contention | Pessimistic | Optimistic | Optimistic abandoned |
-|---|---|---|---|
-| 2 accounts (extreme) | 1,092 | 551 | 5.0% |
-| 10 accounts (high) | 1,919 | 869 | 0.6% |
-| 50 accounts | 2,599 | 1,811 | 0 |
-| 500 accounts (low) | 2,419 | 1,994 | 0 |
-| 50 accounts, half via one hot account | 1,542 | 800 | 2.5% |
+| Contention                            | Pessimistic | Optimistic | Optimistic abandoned |
+| ------------------------------------- | ----------- | ---------- | -------------------- |
+| 2 accounts (extreme)                  | 1,092       | 551        | 5.0%                 |
+| 10 accounts (high)                    | 1,919       | 869        | 0.6%                 |
+| 50 accounts                           | 2,599       | 1,811      | 0                    |
+| 500 accounts (low)                    | 2,419       | 1,994      | 0                    |
+| 50 accounts, half via one hot account | 1,542       | 800        | 2.5%                 |
 
 Row locks won in every scenario, and the gap widened with contention. At 500 accounts the ranges overlap, so that
 difference is **not** clear. Optimistic's median latency looks better in the most contended cases only because abandoned
@@ -284,7 +283,7 @@ predictable; optimistic turns it into variance. A ledger transfer is one short t
 read and write, which is the case where locking is cheap. The conditions under which optimistic usually wins were not
 tested.
 
-Full method, tables, caveats and what the numbers do *not* show: [`docs/BENCHMARK.md`](docs/BENCHMARK.md).
+Full method, tables, caveats and what the numbers do _not_ show: [`docs/BENCHMARK.md`](docs/BENCHMARK.md).
 
 ---
 
@@ -298,12 +297,12 @@ The suite is 97 tests against a real PostgreSQL started by Testcontainers. Highl
   against the pessimistic and the optimistic implementation.
 - **The 10,000-transfer test.** 20 threads, random pairs from 50 accounts, reproducible seed. Asserts the pool's total is
   unchanged, every cached balance equals its `SUM(entry)`, the expected number of transfers exist each with two entries,
-  and no deadlocks. A second run uses tiny balances so many transfers *must* be rejected, and requires every rejection to
+  and no deadlocks. A second run uses tiny balances so many transfers _must_ be rejected, and requires every rejection to
   be a clean business error.
-- **A negative control.** The same harness with ordering turned off *must* produce deadlocks (proving "zero deadlocks"
+- **A negative control.** The same harness with ordering turned off _must_ produce deadlocks (proving "zero deadlocks"
   elsewhere means something) and the ledger must still be consistent afterwards.
 - **The demo's claims, over real HTTP:** the total is identical in every sampled snapshot while balances change; safe mode
-  never deadlocks; unsafe does; a mid-run flip works. And the unsafe switch reaches *only* the demo: with it on, 16
+  never deadlocks; unsafe does; a mid-run flip works. And the unsafe switch reaches _only_ the demo: with it on, 16
   threads of opposite transfers through the API's own service must all succeed.
 - **A stuck lock.** Another connection holds an account's row lock and never lets go; a transfer must give up after
   `ledger.lock-timeout`, roll back completely without burning its idempotency key, and reach the client as a retryable
@@ -324,20 +323,20 @@ name did not match Surefire's patterns. And a shared test container was stopped 
 closed, which made the suite order-dependent: it now starts once, owned by no context. Tests that assert something about
 the whole database (reconciliation, and the demo's "everything sums to zero") get their own database, because the raw-SQL
 schema tests legitimately leave unbalanced rows behind. I first claimed order-independence after trying the default and the
-reversed order, but neither ran the demo tests *after* the schema tests; a code review caught it. The suite now passes in
+reversed order, but neither ran the demo tests _after_ the schema tests; a code review caught it. The suite now passes in
 alphabetical order too, which does.
 
 ---
 
 ## API
 
-| Method and path | Purpose |
-|---|---|
-| `POST /accounts` | Create an account. Body: `{"currency":"USD"}`. Returns `201` with a `Location`. |
-| `POST /transfers` | Execute a transfer. Requires an `Idempotency-Key` header. `201` on first execution, `200` on a replay. |
-| `GET /accounts/{id}/balance` | Current balance. |
+| Method and path                            | Purpose                                                                                                                                                       |
+| ------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `POST /accounts`                           | Create an account. Body: `{"currency":"USD"}`. Returns `201` with a `Location`.                                                                               |
+| `POST /transfers`                          | Execute a transfer. Requires an `Idempotency-Key` header. `201` on first execution, `200` on a replay.                                                        |
+| `GET /accounts/{id}/balance`               | Current balance.                                                                                                                                              |
 | `GET /accounts/{id}/entries?after=&limit=` | Statement, oldest first, **keyset-paginated**: pass the returned `nextAfter` as `after`. `limit` is 1 to 200 (out of range is a `400`, not silently clamped). |
-| `GET /health` | Liveness plus a real database check (`503` if Postgres is unreachable). |
+| `GET /health`                              | Liveness plus a real database check (`503` if Postgres is unreachable).                                                                                       |
 
 ```bash
 curl -s -X POST localhost:8080/transfers \
@@ -350,15 +349,15 @@ Amounts are JSON integers in minor units (`1250` is 12.50). The `Idempotency-Key
 response carries an `X-Request-Id`, taken from the request if it is 1 to 64 characters of `[A-Za-z0-9._-]` and
 generated otherwise.
 
-| Status | `code` | Meaning |
-|---|---|---|
-| 400 | `INVALID_REQUEST` | Malformed request: bad JSON, missing or unknown field, wrong type, missing or malformed `Idempotency-Key`, bad paging |
-| 404 | `ACCOUNT_NOT_FOUND` | An account does not exist |
-| 422 | `INSUFFICIENT_FUNDS` | The source account cannot cover the amount (the balance is deliberately not revealed) |
-| 422 | `CURRENCY_MISMATCH` | The request and both accounts must share one currency |
-| 422 | `INVALID_TRANSFER` | Amount not positive, or source equals destination |
-| 422 | `IDEMPOTENCY_KEY_REUSED` | The key was already used with a different body |
-| 503 | `CONTENTION`, `TRANSIENT_FAILURE` | Nothing was posted; retry with the **same** key (`Retry-After: 1`). `TRANSIENT_FAILURE` covers deadlock victims and lock waits that hit `ledger.lock-timeout`. |
+| Status | `code`                            | Meaning                                                                                                                                                        |
+| ------ | --------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 400    | `INVALID_REQUEST`                 | Malformed request: bad JSON, missing or unknown field, wrong type, missing or malformed `Idempotency-Key`, bad paging                                          |
+| 404    | `ACCOUNT_NOT_FOUND`               | An account does not exist                                                                                                                                      |
+| 422    | `INSUFFICIENT_FUNDS`              | The source account cannot cover the amount (the balance is deliberately not revealed)                                                                          |
+| 422    | `CURRENCY_MISMATCH`               | The request and both accounts must share one currency                                                                                                          |
+| 422    | `INVALID_TRANSFER`                | Amount not positive, or source equals destination                                                                                                              |
+| 422    | `IDEMPOTENCY_KEY_REUSED`          | The key was already used with a different body                                                                                                                 |
+| 503    | `CONTENTION`, `TRANSIENT_FAILURE` | Nothing was posted; retry with the **same** key (`Retry-After: 1`). `TRANSIENT_FAILURE` covers deadlock victims and lock waits that hit `ledger.lock-timeout`. |
 
 Every error body has a `code`; other statuses Spring produces itself (an unknown route, a wrong method) are named after
 the status, such as `NOT_FOUND` or `METHOD_NOT_ALLOWED`. A `500` carries `INTERNAL_ERROR` and is logged as an error, not
@@ -371,14 +370,14 @@ creates its own at startup.
 
 ## Configuration
 
-| Property | Default | Meaning |
-|---|---|---|
-| `ledger.locking.strategy` | `pessimistic` | `pessimistic` or `optimistic`: which `TransferService` the API uses. |
-| `ledger.optimistic.max-attempts` | `20` | Retry budget of the optimistic strategy. |
-| `ledger.lock-timeout` | `PT5S` | Longest a transfer waits for a row lock (`SET LOCAL lock_timeout`, both strategies). On expiry the transfer rolls back and the client gets a retryable `503`. Must be at least 1ms; there is no "wait forever" setting. |
-| `ledger.demo.enabled` | `false` | Exposes `/demo` and its unsafe-locking switch (which affects only the demo's own transfers). Turned on by the `demo` profile. Never for production. |
-| `ledger.reconciliation.enabled` / `.interval` / `.initial-delay` | `true` / `PT5M` / `PT1M` | The reconciliation schedule (ISO-8601 durations). |
-| `logging.structured.format.console` | off | `ecs` for JSON logs; the `json` profile sets it. |
+| Property                                                         | Default                  | Meaning                                                                                                                                                                                                                 |
+| ---------------------------------------------------------------- | ------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ledger.locking.strategy`                                        | `pessimistic`            | `pessimistic` or `optimistic`: which `TransferService` the API uses.                                                                                                                                                    |
+| `ledger.optimistic.max-attempts`                                 | `20`                     | Retry budget of the optimistic strategy.                                                                                                                                                                                |
+| `ledger.lock-timeout`                                            | `PT5S`                   | Longest a transfer waits for a row lock (`SET LOCAL lock_timeout`, both strategies). On expiry the transfer rolls back and the client gets a retryable `503`. Must be at least 1ms; there is no "wait forever" setting. |
+| `ledger.demo.enabled`                                            | `false`                  | Exposes `/demo` and its unsafe-locking switch (which affects only the demo's own transfers). Turned on by the `demo` profile. Never for production.                                                                     |
+| `ledger.reconciliation.enabled` / `.interval` / `.initial-delay` | `true` / `PT5M` / `PT1M` | The reconciliation schedule (ISO-8601 durations).                                                                                                                                                                       |
+| `logging.structured.format.console`                              | off                      | `ecs` for JSON logs; the `json` profile sets it.                                                                                                                                                                        |
 
 Metrics (`ledger.reconciliation.runs{result}`, `ledger.reconciliation.discrepancies`,
 `ledger.transfer.conflicts`) are recorded with Micrometer; only `/health` is exposed over HTTP, so nothing scrapes them
@@ -418,13 +417,13 @@ This is a correctness core, not a product. Honest edges:
 
 ## Where to start reading
 
-| To understand | Read |
-|---|---|
-| The schema and the invariants the database enforces | [`V1__create_ledger_schema.sql`](src/main/resources/db/migration/V1__create_ledger_schema.sql) |
-| The transfer algorithm and the locking argument | [`PessimisticTransferService`](src/main/java/com/ardakeles/ledger/service/PessimisticTransferService.java) |
-| Idempotency and the steps shared by both strategies | [`TransferPosting`](src/main/java/com/ardakeles/ledger/service/TransferPosting.java), [`LedgerRepository`](src/main/java/com/ardakeles/ledger/repository/LedgerRepository.java) |
-| The optimistic variant | [`OptimisticTransferService`](src/main/java/com/ardakeles/ledger/service/OptimisticTransferService.java) |
-| Reconciliation | [`ReconciliationService`](src/main/java/com/ardakeles/ledger/reconciliation/ReconciliationService.java) |
-| The chaos demo | [`DemoService`](src/main/java/com/ardakeles/ledger/demo/DemoService.java), [`index.html`](src/main/resources/demo/index.html) |
-| The concurrency tests | [`LoadHarness`](src/test/java/com/ardakeles/ledger/concurrency/LoadHarness.java), [`ConcurrentTransfersContract`](src/test/java/com/ardakeles/ledger/concurrency/ConcurrentTransfersContract.java), [`UnorderedLockingDeadlockTest`](src/test/java/com/ardakeles/ledger/concurrency/UnorderedLockingDeadlockTest.java) |
-| The benchmark | [`docs/BENCHMARK.md`](docs/BENCHMARK.md), [`ContentionBenchmarkTest`](src/test/java/com/ardakeles/ledger/concurrency/ContentionBenchmarkTest.java) |
+| To understand                                       | Read                                                                                                                                                                                                                                                                                                                   |
+| --------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| The schema and the invariants the database enforces | [`V1__create_ledger_schema.sql`](src/main/resources/db/migration/V1__create_ledger_schema.sql)                                                                                                                                                                                                                         |
+| The transfer algorithm and the locking argument     | [`PessimisticTransferService`](src/main/java/com/ardakeles/ledger/service/PessimisticTransferService.java)                                                                                                                                                                                                             |
+| Idempotency and the steps shared by both strategies | [`TransferPosting`](src/main/java/com/ardakeles/ledger/service/TransferPosting.java), [`LedgerRepository`](src/main/java/com/ardakeles/ledger/repository/LedgerRepository.java)                                                                                                                                        |
+| The optimistic variant                              | [`OptimisticTransferService`](src/main/java/com/ardakeles/ledger/service/OptimisticTransferService.java)                                                                                                                                                                                                               |
+| Reconciliation                                      | [`ReconciliationService`](src/main/java/com/ardakeles/ledger/reconciliation/ReconciliationService.java)                                                                                                                                                                                                                |
+| The chaos demo                                      | [`DemoService`](src/main/java/com/ardakeles/ledger/demo/DemoService.java), [`index.html`](src/main/resources/demo/index.html)                                                                                                                                                                                          |
+| The concurrency tests                               | [`LoadHarness`](src/test/java/com/ardakeles/ledger/concurrency/LoadHarness.java), [`ConcurrentTransfersContract`](src/test/java/com/ardakeles/ledger/concurrency/ConcurrentTransfersContract.java), [`UnorderedLockingDeadlockTest`](src/test/java/com/ardakeles/ledger/concurrency/UnorderedLockingDeadlockTest.java) |
+| The benchmark                                       | [`docs/BENCHMARK.md`](docs/BENCHMARK.md), [`ContentionBenchmarkTest`](src/test/java/com/ardakeles/ledger/concurrency/ContentionBenchmarkTest.java)                                                                                                                                                                     |
